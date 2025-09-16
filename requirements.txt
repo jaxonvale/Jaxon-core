@@ -1,0 +1,4 @@
+# Python dependencies
+flask
+requests
+# add more later as Jaxon grows
