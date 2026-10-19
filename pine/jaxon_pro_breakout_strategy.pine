@@ -1,0 +1,476 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Portions (PRO Breakout trend, cloud and confirmations) are adapted from the MPL-2.0 "PRO Breakout Signals" indicator.
+//
+// JAXON x PRO Breakout — STRATEGY version for TradingView's Strategy Tester.
+// Use on a 5-minute chart. All thresholds are configurable assumptions, not proven settings.
+//
+// Modes
+//   JAXON (MTF VWAP bot) : 4H bullish swings -> 30m pullback into demand -> 5m structure shift -> long, VWAP target, swing-low stop
+//   PRO Breakout         : PRO Breakout BUY/SELL signals with its ATR stop/targets (+ optional 4H bias and confirmation filters)
+//   JAXON + PRO filter   : JAXON setups, taken only when the PRO cloud is bullish and confirmations >= minimum
+//
+// No repainting: higher-timeframe values come from fully closed bars only ([1] + lookahead_on),
+// swing points are only used after their right-hand bars close, and signals act on bar close.
+
+//@version=5
+strategy("JAXON x PRO Breakout [Strategy]", shorttitle="JAXON x PRO", overlay=true,
+     initial_capital=100000, currency=currency.USD, pyramiding=0,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     commission_type=strategy.commission.percent, commission_value=0.05, slippage=2,
+     process_orders_on_close=false, calc_on_every_tick=false, use_bar_magnifier=true,
+     max_boxes_count=200, max_labels_count=500, max_lines_count=500, max_bars_back=500)
+
+// ============================================================ INPUTS
+G_MODE = "1. Mode"
+mode          = input.string("JAXON + PRO filter", "Signal mode", options=["JAXON (MTF VWAP bot)", "PRO Breakout", "JAXON + PRO filter"], group=G_MODE)
+min_conf      = input.int(0, "Min PRO confirmations (0-8)", minval=0, maxval=8, group=G_MODE, tooltip="Used by 'PRO Breakout' and 'JAXON + PRO filter'. 0 = off.")
+pro_need_bias = input.bool(true, "PRO mode: longs need 4H bullish bias", group=G_MODE)
+allow_shorts  = input.bool(false, "PRO mode: allow SELL signals (shorts)", group=G_MODE, tooltip="The JAXON bot is long-only. Shorts exist only in PRO mode.")
+
+G_JX = "2. JAXON bot rules"
+htf_tf      = input.timeframe("240", "Trend timeframe", group=G_JX)
+mtf_tf      = input.timeframe("30", "Demand-zone timeframe", group=G_JX)
+piv_l       = input.int(2, "Swing bars left", minval=1, maxval=10, group=G_JX)
+piv_r       = input.int(2, "Swing bars right", minval=1, maxval=10, group=G_JX)
+atr_len     = input.int(14, "Zone ATR length", minval=2, group=G_JX)
+disp_mult   = input.float(1.5, "Displacement body >= x ATR", minval=0.25, step=0.25, group=G_JX)
+base_lb     = input.int(5, "Bearish base lookback (zone TF bars)", minval=1, maxval=10, group=G_JX)
+zone_exp    = input.int(20, "Zone expiry (zone TF bars)", minval=1, group=G_JX)
+confirm_win = input.int(6, "Structure-shift window (chart bars)", minval=1, group=G_JX)
+min_rr      = input.float(1.5, "Min reward/risk", minval=0.5, step=0.25, group=G_JX)
+stop_ticks  = input.int(1, "Stop offset (ticks below swing low)", minval=0, group=G_JX)
+jx_target   = input.string("VWAP (bot rule)", "JAXON target", options=["VWAP (bot rule)", "PRO ATR target"], group=G_JX,
+     tooltip="VWAP is the original rule. On 2025 BTC/ETH it almost never left room for 1.5R; 'PRO ATR target' uses the PRO target ladder instead.")
+
+G_PRO = "3. PRO Breakout"
+trend_adj   = input.int(10, "Signal Adjuster", minval=1, maxval=25, group=G_PRO, tooltip="Extreme scalping 1-5, scalping 5-10, intraday 10-15, swing 15+")
+target_adj  = input.float(1.0, "Target Adjuster", minval=1, maxval=10, step=0.25, group=G_PRO)
+stop_adj    = input.float(1.0, "Stop Adjuster", minval=1, maxval=10, step=0.25, group=G_PRO)
+pro_tgt_n   = input.int(2, "Take profit at PRO target #", minval=1, maxval=5, group=G_PRO)
+use_reentry = input.bool(false, "Show re-entry triangles", group=G_PRO)
+
+G_CONF = "4. PRO confirmations"
+c1_len1  = input.int(8, "MA cross: short", group=G_CONF, inline="c1")
+c1_type1 = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c1")
+c1_len2  = input.int(20, "MA cross: long", group=G_CONF, inline="c2")
+c1_type2 = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c2")
+mom_len  = input.int(20, "Momentum length", group=G_CONF)
+rvol_len = input.int(100, "RVOL length", minval=20, maxval=200, group=G_CONF)
+input_or = input.session("0930-1000", "Opening range (New York time)", group=G_CONF)
+vw_type  = input.string("Daily", "Confirmation VWAP", options=["Daily", "Weekly"], group=G_CONF)
+c6_len   = input.int(50, "MTF MA 1", group=G_CONF, inline="c6")
+c6_type  = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c6")
+c6_tf    = input.timeframe("", "", group=G_CONF, inline="c6")
+c7_len   = input.int(200, "MTF MA 2", group=G_CONF, inline="c7")
+c7_type  = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c7")
+c7_tf    = input.timeframe("", "", group=G_CONF, inline="c7")
+sec_sym  = input.symbol("AMEX:SPY", "Secondary symbol", group=G_CONF)
+
+G_RISK = "5. Risk & session"
+risk_pct        = input.float(0.25, "Risk per trade (% of equity)", minval=0.01, step=0.05, group=G_RISK)
+qty_step        = input.float(1.0, "Quantity step", minval=0.00000001, group=G_RISK, tooltip="1 for shares/contracts, 0.001 for BTC, 0.01 for ETH")
+max_lev         = input.float(1.0, "Max notional / equity", minval=0.1, group=G_RISK)
+max_entries     = input.int(3, "Max entries per day", minval=1, group=G_RISK)
+daily_loss      = input.float(1.0, "Max daily loss % (stops trading for the day)", minval=0.1, step=0.1, group=G_RISK)
+use_flat        = input.bool(true, "Flatten before session end", group=G_RISK)
+sess_tz         = input.string("America/New_York", "Session timezone", group=G_RISK, tooltip="Stocks/futures: America/New_York or America/Chicago. Crypto: UTC")
+flat_hhmm       = input.int(1555, "Flatten at HHMM", group=G_RISK, tooltip="Crypto (UTC day): 2355")
+last_entry_hhmm = input.int(1530, "No new entries at/after HHMM", group=G_RISK, tooltip="Crypto (UTC day): 2330")
+
+G_VIS = "6. Visuals"
+show_cloud = input.bool(true, "PRO cloud", group=G_VIS)
+show_zones = input.bool(true, "Demand zones", group=G_VIS)
+show_vwap  = input.bool(true, "Session VWAP", group=G_VIS)
+show_table = input.bool(true, "Status table", group=G_VIS)
+buy_color  = input.color(#27a69b, "Buy", group=G_VIS, inline="col")
+sell_color = input.color(#b63632, "Sell", group=G_VIS, inline="col")
+zone_color = input.color(color.new(#12b886, 80), "Zone", group=G_VIS, inline="col")
+
+strategy.risk.max_intraday_loss(daily_loss, strategy.percent_of_equity)
+
+bool jx_on  = mode != "PRO Breakout"
+bool pro_on = mode == "PRO Breakout"
+
+// ============================================================ HELPERS
+// Strict swing high/low: the middle bar must be strictly beyond every neighbour.
+// The value appears on the bar that closes the last right-hand bar (never back-dated).
+f_piv_hi(l, r) =>
+    float c = high[r]
+    bool ok = not na(c)
+    for i = 0 to l + r
+        if i != r and (na(high[i]) or high[i] >= c)
+            ok := false
+    ok ? c : float(na)
+
+f_piv_lo(l, r) =>
+    float c = low[r]
+    bool ok = not na(c)
+    for i = 0 to l + r
+        if i != r and (na(low[i]) or low[i] <= c)
+            ok := false
+    ok ? c : float(na)
+
+f_ma(src, len, type) =>
+    type == "MA" ? ta.sma(src, len) : type == "WMA" ? ta.wma(src, len) : type == "VWMA" ? ta.vwma(src, len) : type == "EMA" ? ta.ema(src, len) : ta.hma(src, len)
+
+f_round_qty(q) =>
+    math.floor(q / qty_step) * qty_step
+
+// ---- 4H bias: two latest confirmed swing highs rising AND two latest swing lows rising
+f_bias(l, r) =>
+    ph = f_piv_hi(l, r)
+    pl = f_piv_lo(l, r)
+    h0 = ta.valuewhen(not na(ph), ph, 0)
+    h1 = ta.valuewhen(not na(ph), ph, 1)
+    l0 = ta.valuewhen(not na(pl), pl, 0)
+    l1 = ta.valuewhen(not na(pl), pl, 1)
+    bool bull = not na(h1) and not na(l1) and h0 > h1 and l0 > l1
+    [bull[1], h0[1], h1[1], l0[1], l1[1]]
+
+// ---- 30m demand zone: bullish displacement (body >= mult x prior ATR, close above the last
+// swing high confirmed before the candle) -> zone = most recent bearish base candle before it
+f_zone(mult, alen, lb, l, r) =>
+    a = ta.atr(alen)
+    ph = f_piv_hi(l, r)
+    sh = ta.valuewhen(not na(ph), ph, 0)
+    float sh_before = sh[1]
+    float body = close - open
+    bool disp = close > open and not na(a[1]) and body >= mult * a[1] and not na(sh_before) and close > sh_before
+    float zl = na
+    float zh = na
+    if disp
+        for i = 1 to lb
+            if close[i] < open[i]
+                zl := low[i]
+                zh := high[i]
+                break
+    bool newz = disp and not na(zl)
+    [newz[1], zl[1], zh[1], time_close[1], close[1], close[2]]
+
+// ============================================================ HIGHER TIMEFRAMES (closed bars only)
+[htf_bull, h0, h1, l0, l1] = request.security(syminfo.tickerid, htf_tf, f_bias(piv_l, piv_r), lookahead=barmerge.lookahead_on)
+[z_new, z_lo_in, z_hi_in, z_t, c30_1, c30_2] = request.security(syminfo.tickerid, mtf_tf, f_zone(disp_mult, atr_len, base_lb, piv_l, piv_r), lookahead=barmerge.lookahead_on)
+bool new30 = not na(z_t) and z_t != nz(z_t[1])
+
+// ============================================================ PRO BREAKOUT (ported)
+get_trend(symbol, trend_adj, use_reentry) =>
+    trend_length = 4 * trend_adj
+    trend_breakout = request.security(symbol, "", barstate.isconfirmed and (ta.rsi(close, 14) > 60 or ta.rsi(close, 14) < 40) and close > (ta.ema(hlc3, trend_length) + (ta.stdev(ta.ema(hlc3, trend_length), trend_length) * (0.25 * trend_adj))) and low > ta.ema(hlc3, trend_length) and high >= ta.highest(high, trend_length))
+    trend_breakdown = request.security(symbol, "", barstate.isconfirmed and (ta.rsi(close, 14) > 60 or ta.rsi(close, 14) < 40) and close < (ta.ema(hlc3, trend_length) - (ta.stdev(ta.ema(hlc3, trend_length), trend_length) * (0.25 * trend_adj))) and high < ta.ema(hlc3, trend_length) and low <= ta.lowest(low, trend_length))
+    trend_avg = ta.ema(hlc3, trend_length)
+    trend_stddev = ta.stdev(ta.ema(hlc3, trend_length), trend_length)
+    var trend_direction = 0
+    trend_direction := trend_breakout ? 1 : trend_breakdown ? -1 : trend_direction[1]
+    long_entry = trend_direction == 1 and trend_direction[1] == -1
+    short_entry = trend_direction == -1 and trend_direction[1] == 1
+    var last_entry_bn = 0
+    var re_entry_count = 0
+    var long_reentry = false
+    var short_reentry = false
+    last_entry_bn := (long_entry or short_entry) ? 1 : last_entry_bn[1] + 1
+    re_entry_count := (long_entry or short_entry) ? 1 : re_entry_count[1]
+    xo = ta.crossover(close, trend_avg)
+    xu = ta.crossunder(close, trend_avg)
+    long_reentry := false
+    short_reentry := false
+    if use_reentry and barstate.isconfirmed
+        if trend_direction == 1 and last_entry_bn >= 20 and re_entry_count == 1 and xo
+            long_reentry := true
+            re_entry_count := re_entry_count[1] + 1
+        else if trend_direction == -1 and last_entry_bn >= 20 and re_entry_count == 1 and xu
+            short_reentry := true
+            re_entry_count := re_entry_count[1] + 1
+    [trend_avg, trend_stddev, trend_direction, long_entry, short_entry, long_reentry, short_reentry]
+
+[trend_avg, trend_stddev, trend_direction, long_entry, short_entry, long_reentry, short_reentry] = get_trend(syminfo.tickerid, trend_adj, use_reentry)
+pro_atr = ta.atr(4 * trend_adj)
+cloud_lo = trend_avg - trend_stddev * 0.25
+cloud_hi = trend_avg + trend_stddev * 0.25
+
+// ---- confirmations (numeric score out of 8)
+ma1 = f_ma(close, c1_len1, c1_type1)
+ma2 = f_ma(close, c1_len2, c1_type2)
+last_xo = ta.valuewhen(ta.crossover(ma1, ma2), bar_index, 0)
+last_xu = ta.valuewhen(ta.crossunder(ma1, ma2), bar_index, 0)
+int c1 = bar_index - math.max(nz(last_xo), nz(last_xu)) <= 5 ? 1 : 0
+
+[ha_o, ha_c, ha_h, ha_l] = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, [ta.ema(open, mom_len), ta.ema(close, mom_len), ta.ema(high, mom_len), ta.ema(low, mom_len)])
+dif_oc = ta.ema(ha_c, mom_len) - ta.ema(ha_o, mom_len)
+dif_hl = ta.ema(ha_h, mom_len) - ta.ema(ha_l, mom_len)
+mom_pct = dif_hl != 0 ? dif_oc * 100 / dif_hl : 0.0
+
+svol = ta.ema(volume, rvol_len)
+rvol_value = math.round(ta.ema(volume / svol[1], 20), 2)
+int c3 = rvol_value >= 0.9 ? 1 : 0
+
+or_session = time(timeframe.period, str.format("{0}:1234567", input_or), "America/New_York")
+bool in_or = not na(or_session)
+var float or_high = na
+var float or_low = na
+if in_or
+    if not in_or[1]
+        or_low := low
+        or_high := high
+    else
+        or_low := math.min(low, or_low)
+        or_high := math.max(high, or_high)
+
+conf_anchor = timeframe.change(vw_type == "Daily" ? "1D" : "1W")
+[conf_vwap, conf_vw_up, conf_vw_lo] = ta.vwap(hlc3, conf_anchor, 1.0)
+ma6 = request.security(syminfo.tickerid, c6_tf, f_ma(close[1], c6_len, c6_type), lookahead=barmerge.lookahead_on)
+ma7 = request.security(syminfo.tickerid, c7_tf, f_ma(close[1], c7_len, c7_type), lookahead=barmerge.lookahead_on)
+[t_avg8, t_sd8, td8, le8, se8, lr8, sr8] = get_trend(sec_sym, trend_adj, false)
+
+int score_long = c1 + (mom_pct > 0 ? 1 : 0) + c3 + (in_or ? 1 : (high >= nz(or_high, high + 1) ? 1 : 0)) + (close >= conf_vwap ? 1 : 0) + (close >= ma6 ? 1 : 0) + (close >= ma7 ? 1 : 0) + (td8 == 1 ? 1 : 0)
+int score_short = c1 + (mom_pct <= 0 ? 1 : 0) + c3 + (in_or ? 1 : (low <= nz(or_low, low - 1) ? 1 : 0)) + (close <= conf_vwap ? 1 : 0) + (close <= ma6 ? 1 : 0) + (close <= ma7 ? 1 : 0) + (td8 == -1 ? 1 : 0)
+
+// ============================================================ SESSION / LIMITS
+jx_vwap = ta.vwap(hlc3, timeframe.change("1D"))
+int hhmm = hour(time_close, sess_tz) * 100 + minute(time_close, sess_tz)
+bool in_entry_window = not use_flat or hhmm < last_entry_hhmm
+
+var int entries_today = 0
+if timeframe.change("1D")
+    entries_today := 0
+if strategy.position_size != 0 and strategy.position_size[1] == 0
+    entries_today += 1
+
+var int pending_bar = -1
+if pending_bar >= 0 and bar_index > pending_bar
+    if strategy.position_size == 0
+        strategy.cancel("JX")          // entry is valid for the next bar only
+    pending_bar := -1
+
+bool flat_now = strategy.position_size == 0 and pending_bar < 0
+bool can_enter = flat_now and entries_today < max_entries and in_entry_window
+
+// ============================================================ DEMAND ZONES (arrays)
+var float[] zl_a = array.new_float()
+var float[] zh_a = array.new_float()
+var int[]   zt_a = array.new_int()
+var int[]   zb_a = array.new_int()
+var int[]   zs_a = array.new_int()     // 0 active, 1 invalidated, 2 expired
+var bool[]  zu_a = array.new_bool()    // attempt used
+var box[]   zx_a = array.new_box()
+
+f_end_box(b) =>
+    if not na(b)
+        box.set_right(b, bar_index)
+        box.set_extend(b, extend.none)
+
+if new30 and not na(c30_1)
+    n = array.size(zl_a)
+    if n > 0
+        for k = 0 to n - 1
+            if array.get(zs_a, k) == 0
+                array.set(zb_a, k, array.get(zb_a, k) + 1)
+                if c30_1 < array.get(zl_a, k)
+                    array.set(zs_a, k, 1)
+                    f_end_box(array.get(zx_a, k))
+                else if array.get(zb_a, k) >= zone_exp
+                    array.set(zs_a, k, 2)
+                    f_end_box(array.get(zx_a, k))
+    if z_new
+        array.push(zl_a, z_lo_in)
+        array.push(zh_a, z_hi_in)
+        array.push(zt_a, z_t)
+        array.push(zb_a, 0)
+        array.push(zs_a, 0)
+        array.push(zu_a, false)
+        box bx = na
+        if show_zones and jx_on
+            bx := box.new(bar_index, z_hi_in, bar_index + 1, z_lo_in, border_color=color.new(#12b886, 30), bgcolor=zone_color, extend=extend.right)
+        array.push(zx_a, bx)
+    // keep memory bounded: drop the oldest finished zone
+    if array.size(zl_a) > 40 and array.get(zs_a, 0) != 0
+        array.shift(zl_a)
+        array.shift(zh_a)
+        array.shift(zt_a)
+        array.shift(zb_a)
+        array.shift(zs_a)
+        array.shift(zu_a)
+        array.shift(zx_a)
+
+// ============================================================ 5m SWING HIGHS
+ph5 = f_piv_hi(piv_l, piv_r)
+var float ph5_px = na
+var int ph5_t = na
+if not na(ph5)
+    ph5_px := ph5
+    ph5_t := time[piv_r]
+
+// ============================================================ JAXON STATE MACHINE
+var int   jx_state = 0                 // 0 idle, 1 zone touched (waiting for structure shift)
+var float jx_thr = na                  // frozen break threshold
+var float jx_ll = na                   // lowest low since touch
+var int   jx_bars = 0
+var int   jx_zone_t = na
+var float jx_zlo = na
+var float jx_zhi = na
+bool jx_touch = false
+bool jx_signal = false
+bool jx_cancel = false
+float sig_stop = na
+float sig_tgt = na
+
+f_zone_index(t) =>
+    int idx = -1
+    n = array.size(zt_a)
+    if n > 0
+        for k = 0 to n - 1
+            if array.get(zt_a, k) == t
+                idx := k
+    idx
+
+if jx_on and barstate.isconfirmed
+    if jx_state == 1
+        jx_bars += 1
+        jx_ll := math.min(jx_ll, low)
+        zi = f_zone_index(jx_zone_t)
+        int zst = zi >= 0 ? array.get(zs_a, zi) : 1
+        if low < jx_zlo or zst != 0 or not htf_bull or (use_flat and hhmm >= flat_hhmm)
+            jx_state := 0              // cancellation wins over a same-bar confirmation
+            jx_cancel := true
+        else if close > jx_thr
+            jx_state := 0
+            float stp = jx_ll - stop_ticks * syminfo.mintick
+            float tgt = jx_target == "VWAP (bot rule)" ? jx_vwap : close + pro_tgt_n * target_adj * pro_atr
+            float rr = (close > stp and tgt > close) ? (tgt - close) / (close - stp) : 0.0
+            bool pro_ok = mode != "JAXON + PRO filter" or (trend_direction == 1 and score_long >= min_conf)
+            if rr >= min_rr and pro_ok and can_enter
+                jx_signal := true
+                sig_stop := stp
+                sig_tgt := tgt
+            else
+                jx_cancel := true
+        else if jx_bars >= confirm_win
+            jx_state := 0
+            jx_cancel := true
+    else if htf_bull and can_enter
+        n = array.size(zl_a)
+        int pick = -1
+        if n > 0
+            for k = n - 1 to 0
+                if array.get(zs_a, k) == 0 and not array.get(zu_a, k) and time >= array.get(zt_a, k) and low <= array.get(zh_a, k) and high >= array.get(zl_a, k)
+                    pick := k
+                    break
+        if pick >= 0
+            bool pullback_ok = c30_1 < c30_2
+            bool swing_ok = not na(ph5_t) and ph5_t >= array.get(zt_a, pick)
+            if pullback_ok and swing_ok
+                array.set(zu_a, pick, true)
+                jx_state := 1
+                jx_thr := ph5_px
+                jx_ll := low
+                jx_bars := 0
+                jx_zone_t := array.get(zt_a, pick)
+                jx_zlo := array.get(zl_a, pick)
+                jx_zhi := array.get(zh_a, pick)
+                jx_touch := true
+                if low < jx_zlo
+                    jx_state := 0
+                    jx_cancel := true
+
+// ============================================================ ORDERS
+var float cur_stop = na
+var float cur_tgt = na
+
+f_qty(entry, stop) =>
+    float per_unit = math.abs(entry - stop) * syminfo.pointvalue
+    float q = per_unit > 0 ? f_round_qty(strategy.equity * risk_pct / 100 / per_unit) : 0.0
+    math.min(q, f_round_qty(strategy.equity * max_lev / (entry * syminfo.pointvalue)))
+
+if jx_signal
+    q = f_qty(close, sig_stop)
+    // buy limit = highest fill price that still gives min reward/risk: a gap above it is not filled
+    float lmax = (sig_tgt + min_rr * sig_stop) / (1 + min_rr)
+    if q > 0
+        strategy.entry("JX", strategy.long, qty=q, limit=lmax, comment="JAXON")
+        strategy.exit("JX exit", "JX", stop=sig_stop, limit=sig_tgt, comment_loss="JX stop", comment_profit="JX target")
+        pending_bar := bar_index
+        cur_stop := sig_stop
+        cur_tgt := sig_tgt
+        alert("JAXON long " + syminfo.ticker + " stop " + str.tostring(sig_stop, format.mintick) + " target " + str.tostring(sig_tgt, format.mintick), alert.freq_once_per_bar_close)
+
+bool pro_buy = false
+bool pro_sell = false
+if pro_on and barstate.isconfirmed and in_entry_window and entries_today < max_entries
+    if long_entry and (not pro_need_bias or htf_bull) and score_long >= min_conf and strategy.position_size <= 0
+        float stp = close - stop_adj * pro_atr
+        float tgt = close + pro_tgt_n * target_adj * pro_atr
+        q = f_qty(close, stp)
+        if q > 0
+            strategy.entry("PRO L", strategy.long, qty=q, comment="PRO BUY " + str.tostring(score_long) + "/8")
+            strategy.exit("PRO L exit", "PRO L", stop=stp, limit=tgt, comment_loss="PRO stop", comment_profit="PRO T" + str.tostring(pro_tgt_n))
+            cur_stop := stp
+            cur_tgt := tgt
+            pro_buy := true
+            alert("PRO BUY " + syminfo.ticker, alert.freq_once_per_bar_close)
+    if short_entry and strategy.position_size > 0
+        strategy.close("PRO L", comment="PRO SELL signal")
+    if short_entry and allow_shorts and score_short >= min_conf and strategy.position_size >= 0
+        float stp = close + stop_adj * pro_atr
+        float tgt = close - pro_tgt_n * target_adj * pro_atr
+        q = f_qty(close, stp)
+        if q > 0
+            strategy.entry("PRO S", strategy.short, qty=q, comment="PRO SELL " + str.tostring(score_short) + "/8")
+            strategy.exit("PRO S exit", "PRO S", stop=stp, limit=tgt, comment_loss="PRO stop", comment_profit="PRO T" + str.tostring(pro_tgt_n))
+            cur_stop := stp
+            cur_tgt := tgt
+            pro_sell := true
+            alert("PRO SELL " + syminfo.ticker, alert.freq_once_per_bar_close)
+    if long_entry and strategy.position_size < 0
+        strategy.close("PRO S", comment="PRO BUY signal")
+
+if use_flat and hhmm >= flat_hhmm and strategy.position_size != 0
+    strategy.close_all(comment="Session flatten")
+
+// ============================================================ PLOTS
+cl_hi = plot(show_cloud ? cloud_hi : na, "Cloud High", color=color.new(color.white, 100), editable=false)
+cl_lo = plot(show_cloud ? cloud_lo : na, "Cloud Low", color=color.new(color.white, 100), editable=false)
+cl_hs = plot(show_cloud ? cloud_hi + pro_atr * 0.1 : na, "Cloud High Shade", color=color.new(#c2c2c2, 90), editable=false)
+cl_ls = plot(show_cloud ? cloud_lo - pro_atr * 0.1 : na, "Cloud Low Shade", color=color.new(#c2c2c2, 90), editable=false)
+base_color = trend_direction == 1 ? buy_color : trend_direction == -1 ? sell_color : color.gray
+fill(cl_hi, cl_lo, color=color.new(base_color, 60), title="Cloud")
+fill(cl_hs, cl_ls, color=color.new(base_color, 85), title="Cloud Shade")
+
+plot(show_vwap ? jx_vwap : na, "Session VWAP", color=color.new(#f08c00, 0), linewidth=2)
+plot(strategy.position_size != 0 ? cur_stop : na, "Stop", color=color.new(#e03131, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? cur_tgt : na, "Target", color=color.new(#1c7ed6, 0), style=plot.style_linebr, linewidth=2)
+plot(jx_state == 1 ? jx_thr : na, "Frozen break level", color=color.new(#4c6ef5, 0), style=plot.style_linebr)
+
+plotshape(jx_touch, "Zone touch", shape.circle, location.belowbar, color.new(#fab005, 0), size=size.tiny)
+plotshape(jx_cancel, "Setup cancelled", shape.xcross, location.belowbar, color.new(#868e96, 0), size=size.tiny)
+plotshape(jx_signal, "JAXON BUY", shape.labelup, location.belowbar, color.new(buy_color, 0), text="JX BUY", textcolor=color.white, size=size.small)
+plotshape(pro_on and long_entry, "PRO BUY", shape.labelup, location.belowbar, color.new(buy_color, 30), text="BUY", textcolor=color.white, size=size.tiny)
+plotshape(pro_on and short_entry, "PRO SELL", shape.labeldown, location.abovebar, color.new(sell_color, 30), text="SELL", textcolor=color.white, size=size.tiny)
+plotshape(use_reentry and long_reentry, "Re-entry long", shape.triangleup, location.belowbar, color.new(buy_color, 60), size=size.tiny)
+plotshape(use_reentry and short_reentry, "Re-entry short", shape.triangledown, location.abovebar, color.new(sell_color, 60), size=size.tiny)
+bgcolor(jx_on and not htf_bull ? color.new(color.gray, 94) : na, title="No 4H bias")
+
+// ============================================================ STATUS TABLE
+var table tb = table.new(position.top_right, 2, 9, bgcolor=color.new(#11141a, 10), border_width=1)
+if show_table and barstate.islast
+    int active = 0
+    if array.size(zs_a) > 0
+        for k = 0 to array.size(zs_a) - 1
+            active += array.get(zs_a, k) == 0 and not array.get(zu_a, k) ? 1 : 0
+    tc = color.white
+    table.cell(tb, 0, 0, "Mode", text_color=tc)
+    table.cell(tb, 1, 0, mode, text_color=tc)
+    table.cell(tb, 0, 1, "4H bias", text_color=tc)
+    table.cell(tb, 1, 1, htf_bull ? "BULLISH" : "neutral", text_color=htf_bull ? buy_color : color.gray)
+    table.cell(tb, 0, 2, "4H swings H/L", text_color=tc)
+    table.cell(tb, 1, 2, str.tostring(h1, format.mintick) + "→" + str.tostring(h0, format.mintick) + " / " + str.tostring(l1, format.mintick) + "→" + str.tostring(l0, format.mintick), text_color=tc)
+    table.cell(tb, 0, 3, "Open demand zones", text_color=tc)
+    table.cell(tb, 1, 3, str.tostring(active), text_color=tc)
+    table.cell(tb, 0, 4, "Setup", text_color=tc)
+    table.cell(tb, 1, 4, jx_state == 1 ? "TOUCHED: need close > " + str.tostring(jx_thr, format.mintick) : "waiting", text_color=tc)
+    table.cell(tb, 0, 5, "PRO trend", text_color=tc)
+    table.cell(tb, 1, 5, trend_direction == 1 ? "UP" : trend_direction == -1 ? "DOWN" : "-", text_color=base_color)
+    table.cell(tb, 0, 6, "Confirmations L/S", text_color=tc)
+    table.cell(tb, 1, 6, str.tostring(score_long) + "/8  " + str.tostring(score_short) + "/8", text_color=tc)
+    table.cell(tb, 0, 7, "Entries today", text_color=tc)
+    table.cell(tb, 1, 7, str.tostring(entries_today) + " / " + str.tostring(max_entries), text_color=tc)
+    table.cell(tb, 0, 8, "Chart TF", text_color=tc)
+    table.cell(tb, 1, 8, timeframe.period + (timeframe.period == "5" ? "" : "  (use 5m)"), text_color=timeframe.period == "5" ? tc : color.orange)
