@@ -1,4 +1,9 @@
 # Python dependencies
 flask
 requests
-# add more later as Jaxon grows
+# trading bot
+pandas>=2.2
+numpy>=1.26
+ccxt>=4.3        # crypto data + orders
+yfinance>=0.2    # optional: stock data
+pytest>=8        # tests
