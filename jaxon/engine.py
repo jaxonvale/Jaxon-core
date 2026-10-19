@@ -25,7 +25,8 @@ from .indicators import FeedMonitor, SessionVWAP
 from .journal import IdFactory, Journal
 from .models import Bar, Fill, Order, Setup, Signal, State, Trade
 from .risk import SizeResult, size_position
-from .strategy import FiveMinContext, StrategyCore
+from .pro import ProBreakout, ProState
+from .strategy import FiveMinContext, StrategyCore, floor_tick
 
 ENGINE_VERSION = "jaxon-engine-1.0"
 
@@ -60,6 +61,8 @@ class SymbolRuntime:
     flatten_order_id: Optional[str] = None
     bars_5m: int = 0
     planned: Optional[SizeResult] = None
+    pro: Optional[ProBreakout] = None
+    pro_state: Optional[ProState] = None
 
 
 class TradingEngine:
@@ -83,6 +86,7 @@ class TradingEngine:
                 agg4h=BarAggregator(inst.symbol, 240, base, cal, inst.bars.four_hour_alignment),
                 vwap=SessionVWAP(s.vwap_require_complete_session, inst.volume_type in s.vwap_allowed_volume_types),
                 feed=FeedMonitor(base, inst.bars.stale_gap_bars, inst.bars.stale_recovery_bars),
+                pro=ProBreakout(s.pro_trend_adj),
             )
         self.cash = cfg.portfolio.starting_equity
         self.trades: list[Trade] = []
@@ -158,9 +162,18 @@ class TradingEngine:
             rt.bars_5m += 1
             can = (not self.locked and self.entries_today < self.cfg.risk.max_entries_per_session
                    and self._positions_and_pending() < self.cfg.risk.max_open_positions)
-            confirmed = core.on_5m(b5, FiveMinContext(can, rt.session.close))
-            if confirmed is not None:
-                self._on_confirm(rt, confirmed, b5)
+            ps = rt.pro_state = rt.pro.update(b5)
+            mode = self.cfg.strategy.mode
+            if mode == "pro_breakout":
+                if (rt.trade is not None and ps.short_entry and self.cfg.strategy.pro_exit_on_sell
+                        and rt.flatten_order_id is None):
+                    self._submit_exit(rt, b5.end, "pro_sell_signal")
+                if ps.long_entry and can:
+                    self._on_pro_signal(rt, b5, ps)
+            else:
+                confirmed = core.on_5m(b5, FiveMinContext(can, rt.session.close))
+                if confirmed is not None:
+                    self._on_confirm(rt, confirmed, b5)
 
         eq = self.equity()
         self.equity_curve.append((bar.end, eq))
@@ -208,7 +221,56 @@ class TradingEngine:
         vwap, why = rt.vwap.value()
         s.vwap_snapshot = vwap
         s.vwap_note = why or "bar_based_vwap_approximation"
-        plan = rt.core.plan(s, b5.close, vwap, why, inst.tick_size, cm.net_target_per_unit)
+        sc = self.cfg.strategy
+        tgt_px, tgt_why = vwap, why
+        if sc.target_mode == "pro_atr":
+            ps = rt.pro_state
+            tgt_px = (b5.close + sc.pro_target_n * sc.pro_target_adj * ps.atr) if ps and ps.atr else None
+            tgt_why = "" if tgt_px is not None else "pro_atr_unavailable"
+        plan = rt.core.plan(s, b5.close, tgt_px, tgt_why, inst.tick_size, cm.net_target_per_unit)
+        if plan.reason.startswith("vwap_unavailable") and sc.target_mode == "pro_atr":
+            plan.reason = plan.reason.replace("vwap_unavailable", "target_unavailable")
+        if not plan.reason and sc.mode == "jaxon_pro" and (rt.pro_state is None or rt.pro_state.trend != 1):
+            plan.reason = "pro_filter_trend_not_up"
+        self._gate_and_submit(rt, s, plan, b5, vwap)
+
+    def _on_pro_signal(self, rt: SymbolRuntime, b5: Bar, ps: ProState):
+        """PRO Breakout BUY signal (ported indicator), with the bot's gates and risk rules."""
+        from .models import Setup
+        from .strategy import SignalPlan
+        t, sc, core, tick = b5.end, self.cfg.strategy, rt.core, rt.inst.tick_size
+        nan = float("nan")
+        s = Setup(self.ids.new("S", rt.inst.symbol, t), rt.inst.symbol, "", nan, nan, t, t, b5.start, nan, b5.start, t,
+                  b5.low, core.htf_swings(t), core.bias, status="confirmed", confirm_at=t)
+        core.setups.append(s)
+        core._to(State.SHIFT_CONFIRMED, t, "pro_buy_signal", setup_id=s.setup_id)
+        vwap, why = rt.vwap.value()
+        s.vwap_snapshot, s.vwap_note = vwap, why or "bar_based_vwap_approximation"
+        if ps.atr is None:
+            plan = SignalPlan(False, "pro_atr_unavailable", b5.close)
+        else:
+            stop = floor_tick(b5.close - sc.pro_stop_adj * ps.atr, tick)
+            tgt = floor_tick(b5.close + sc.pro_target_n * sc.pro_target_adj * ps.atr, tick)
+            if sc.target_mode == "vwap":
+                tgt = floor_tick(vwap, tick) if vwap is not None else None
+            if tgt is None:
+                plan = SignalPlan(False, f"vwap_unavailable:{why}", b5.close, stop)
+            else:
+                rr = (tgt - b5.close) / (b5.close - stop) if b5.close > stop else 0.0
+                reason = ""
+                if sc.pro_require_bias and core.bias != "bullish":
+                    reason = "pro_no_4h_bias"
+                elif not tgt > b5.close:
+                    reason = "target_not_above_entry"
+                elif rr < sc.min_reward_risk:
+                    reason = "rr_below_min"
+                elif rt.cm.net_target_per_unit(b5.close, tgt) <= 0:
+                    reason = "costs_exceed_reward"
+                plan = SignalPlan(not reason, reason, b5.close, stop, tgt, rr)
+        self._gate_and_submit(rt, s, plan, b5, vwap)
+
+    def _gate_and_submit(self, rt: SymbolRuntime, s: Setup, plan, b5: Bar, vwap):
+        t, inst, cm = b5.end, rt.inst, rt.cm
         s.proposed_entry, s.stop, s.target, s.proposed_rr = plan.proposed_entry, plan.stop, plan.target, plan.rr
         if plan.target:
             e = cm.buy_market(plan.proposed_entry)
@@ -255,9 +317,9 @@ class TradingEngine:
             reason = "outside_entry_window"
         elif self.locked:
             reason = "daily_lockout"
-        elif rt.core.bias != "bullish":
+        elif rt.core.bias != "bullish" and (cfg.strategy.mode != "pro_breakout" or cfg.strategy.pro_require_bias):
             reason = "bias_lost_before_entry"
-        elif not rt.core.zone(s.zone_id).is_valid:
+        elif s.zone_id and not rt.core.zone(s.zone_id).is_valid:
             reason = "zone_invalid_before_entry"
         elif bar.open <= s.stop or exec_px <= s.stop:
             reason = "gapped_below_stop"
@@ -267,7 +329,8 @@ class TradingEngine:
             reason = "entry_rr_below_min"
         size: Optional[SizeResult] = None
         if not reason:
-            size = size_position(self.equity(), exec_px, s.stop, inst, cm, cfg.risk, self.open_risk_cash())
+            eq = cfg.portfolio.starting_equity if cfg.risk.size_from == "starting_equity" else self.equity()
+            size = size_position(eq, exec_px, s.stop, inst, cm, cfg.risk, self.open_risk_cash())
             if not size.ok:
                 reason = size.reason
             else:

@@ -125,6 +125,16 @@ def cmd_paper_live(a):
     LivePaper(cfg, a.state_dir, feeds).run_forever(a.max_cycles, printer=lambda s: print(s, flush=True))
 
 
+def cmd_prop_study(a):
+    from .prop_study import RISKS, VARIANTS, study
+    import pandas as pd
+    risks = [float(x) / 100 for x in a.risk] if a.risk else RISKS
+    variants = {k: v for k, v in VARIANTS.items() if not a.variant or k in a.variant}
+    study(a.config, a.out, variants, risks, a.workers)
+    df = pd.read_csv(Path(a.out) / "prop_study.csv")
+    print(df.to_string(index=False))
+
+
 def cmd_download(a):
     from .data.download import download
     p = download(a.source, a.symbol, a.interval, a.start, a.end, a.out, a.cache)
@@ -170,6 +180,12 @@ def main(argv=None) -> int:
     s.add_argument("--product", action="append", help="SYMBOL=COINBASE_PRODUCT if they differ")
     s.add_argument("--max-cycles", type=int, help="stop after N candle cycles (default: run forever)")
     s.add_argument("--reset", action="store_true"); s.set_defaults(f=cmd_paper_live)
+
+    s = sub.add_parser("prop-study", help="backtest variants and replay prop-firm challenges from every start day")
+    s.add_argument("config"); s.add_argument("--out", default="runs/prop_study")
+    s.add_argument("--risk", nargs="*", help="risk per trade in %, e.g. 0.25 0.5 1")
+    s.add_argument("--variant", nargs="*"); s.add_argument("--workers", type=int, default=4)
+    s.set_defaults(f=cmd_prop_study)
 
     s = sub.add_parser("download", help="download REAL historical OHLCV (public, no credentials) to CSV")
     s.add_argument("--source", choices=["binance_vision", "coinbase"], default="binance_vision")

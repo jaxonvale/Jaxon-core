@@ -59,6 +59,8 @@ def size_position(equity: float, entry: float, stop: float, inst: InstrumentConf
     q = min(q_risk, floor_lot(equity * rc.max_leverage / (entry * cm.vpp), lot))
     if inst.initial_margin_per_unit:
         q = min(q, floor_lot(equity * rc.max_margin_usage / inst.initial_margin_per_unit, lot))
+    if inst.max_quantity:
+        q = min(q, floor_lot(inst.max_quantity, lot))
     room = equity * rc.max_open_risk_pct - open_risk_cash
     q = floor_lot(max_lots_within(room, int(round(q / lot))) * lot, lot)
     if q < inst.min_quantity:

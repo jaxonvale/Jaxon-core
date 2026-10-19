@@ -79,6 +79,7 @@ class InstrumentConfig:
     data: DataSource
     min_notional: float = 0.0
     initial_margin_per_unit: Optional[float] = None
+    max_quantity: Optional[float] = None   # e.g. prop-firm contract cap
 
 
 @dataclass
@@ -90,6 +91,7 @@ class RiskConfig:
     max_open_risk_pct: float = 0.005
     max_leverage: float = 1.0           # max notional / equity
     max_margin_usage: float = 1.0       # used only when initial_margin_per_unit is set
+    size_from: str = "current_equity"   # or "starting_equity" (fixed-dollar risk, e.g. prop challenges)
 
 
 @dataclass
@@ -119,6 +121,15 @@ class StrategyConfig:
     vwap_allowed_volume_types: list = field(default_factory=lambda: ["exchange", "consolidated"])
     vwap_require_complete_session: bool = True
     cancel_setup_at_session_end: bool = True
+    # --- signal mode (PRO Breakout = port of the user's TradingView indicator) ---
+    mode: str = "jaxon"                 # jaxon | jaxon_pro | pro_breakout
+    target_mode: str = "vwap"           # vwap | pro_atr
+    pro_trend_adj: int = 10
+    pro_target_adj: float = 1.0
+    pro_stop_adj: float = 1.0
+    pro_target_n: int = 2
+    pro_require_bias: bool = True       # pro_breakout mode: longs only with 4H bullish bias
+    pro_exit_on_sell: bool = True       # pro_breakout mode: a SELL signal closes the long
 
 
 @dataclass
@@ -293,6 +304,12 @@ def validate(cfg: Config) -> list[str]:
                  "zone_expiry_bars", "confirm_window_bars"):
         if getattr(s, name) < 1:
             raise ConfigError(f"strategy.{name} must be >= 1")
+    if s.mode not in ("jaxon", "jaxon_pro", "pro_breakout"):
+        raise ConfigError("strategy.mode must be jaxon, jaxon_pro or pro_breakout")
+    if s.target_mode not in ("vwap", "pro_atr"):
+        raise ConfigError("strategy.target_mode must be vwap or pro_atr")
+    if r.size_from not in ("current_equity", "starting_equity"):
+        raise ConfigError("risk.size_from must be current_equity or starting_equity")
     if s.pullback_declining_closes < 2:
         raise ConfigError("strategy.pullback_declining_closes must be >= 2")
     for p in cfg.evaluation.sensitivity:
