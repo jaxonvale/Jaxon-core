@@ -2,32 +2,89 @@
 
 This repo holds the core brain & memory system for Jaxon Vale — AI partner.
 
-## Trading bot (`trading_bot/`)
+## JAXON trading research + paper-trading agent (`jaxon/`)
 
-Long-only multi-timeframe setup:
+Version 1: **long-only, backtesting and paper trading only. No live orders.**
 
-1. **4H going up** — close > EMA50, EMA20 > EMA50, latest 4H swing low higher than the last one.
-2. **30m pulling back** — close < EMA21 and (EMA9 < EMA21 or a 30m lower high).
-3. **5m structure break** — the 5m makes a lower high during the pullback, then a 5m candle closes above it.
-4. **VWAP entry** — within 1h of the break, the first 5m candle that dips to session VWAP and closes back above it. Fill at next candle open.
-5. **Stop under the lows** — lowest low of the pullback leg minus 0.1×ATR. Skipped if the stop is <0.2% or >3% away.
-6. **Exits** — 2R target, stop to breakeven at +1R, 24h max hold. Risk 1% of equity per trade.
+Setup (from a video; all thresholds are JAXON's own assumptions, see
+[`docs/assumptions.md`](docs/assumptions.md)):
 
-Higher-timeframe candles are only used after they close (tested — no lookahead). All settings live in `trading_bot/config.py`.
+1. **4-hour chart going up**: last two confirmed 4H swing highs rising and last two swing lows rising.
+2. **30-minute pullback into demand**: a demand zone (base candle before a 1.5×ATR bullish displacement), touched by a 5m candle while 30m closes are declining.
+3. **5-minute bullish structure shift**: a 5m close above the swing high frozen at the touch, within 6 bars.
+4. **Long entry** at the next bar's open, after rechecking every rule at the real fill price.
+5. **Target = session VWAP** snapshot at confirmation. **Stop = swing low** (lowest low from touch to confirmation, minus 1 tick).
 
+> Nothing here shows the setup makes money. The bundled data is synthetic and labeled so.
+> Real-data results are in [`docs/results_binance_2025.md`](docs/results_binance_2025.md).
+
+### Install
 ```bash
-pip install -r requirements.txt
-
-python -m trading_bot backtest --demo --chart demo.html                 # synthetic data, no network
-python -m trading_bot backtest --symbol BTC/USDT --days 90 --chart btc.html --trades btc.csv
-python -m trading_bot backtest --symbol SPY --source yfinance --tz America/New_York
-python -m trading_bot backtest --csv my_5m.csv                          # timestamp,open,high,low,close,volume
-
-python -m trading_bot scan --symbols BTC/USDT ETH/USDT SOL/USDT         # where each chart is in the setup
-python -m trading_bot live --symbol BTC/USDT                            # paper trading
-EXCHANGE_API_KEY=... EXCHANGE_SECRET=... python -m trading_bot live --symbol BTC/USDT --live   # real orders
+python3 -m pip install -r requirements.txt      # Python 3.11+
+python3 -m pytest -q                            # full test suite
 ```
 
-`--chart` writes an HTML chart with candles, VWAP, entries, stops and targets.
-Live mode sends market orders and manages stop/target from the bot (checks price every 15s), so keep it running. State and trade log go to `bot_state/`.
-For stocks use `--tz America/New_York` so VWAP resets at the US session. yfinance only gives ~60 days of 5m history.
+### Commands
+```bash
+# validate a config and its CSV data
+python -m jaxon validate-config configs/example_scenario.yaml
+python -m jaxon validate-data   configs/example_equity.yaml
+
+# CSV backtest (no credentials) -> trades/setups CSV+JSON, equity, journal, summary, HTML chart
+python -m jaxon backtest configs/example_scenario.yaml --out runs/scenario
+
+# chronological dev / validation / out-of-sample split + parameter sensitivity (dev+validation only)
+python -m jaxon evaluate configs/example_equity.yaml --out runs/equity_eval
+
+# deterministic paper replay, persisted and resumable (kill it any time, rerun the same command)
+python -m jaxon replay configs/example_scenario.yaml --state-dir runs/paper --max-bars 1000
+python -m jaxon replay configs/example_scenario.yaml --state-dir runs/paper
+python -m jaxon status --state-dir runs/paper
+
+# explain a logged setup (deterministic record; --llm adds prose via the Anthropic API, read-only)
+python -m jaxon explain --run runs/scenario --setup <setup_id from setups.csv> [--llm]
+
+# regenerate the labeled synthetic fixtures
+python -m jaxon make-fixtures
+```
+
+### Real historical data (public, no credentials)
+```bash
+python -m jaxon download --source binance_vision --symbol BTCUSDT --interval 1m \
+    --start 2025-01 --end 2025-12 --out data/real/BTCUSDT_1m_2025.csv
+python -m jaxon download --source binance_vision --symbol ETHUSDT --interval 1m \
+    --start 2025-01 --end 2025-12 --out data/real/ETHUSDT_1m_2025.csv
+python -m jaxon evaluate configs/real_binance_btc_eth.yaml --out runs/real_2025
+```
+Binance archives are checked against their published SHA-256, and the checksums are written into the CSV header.
+`--source coinbase --symbol BTC-USD` uses Coinbase's public candles instead.
+Real data files are not committed (`data/real/` is git-ignored).
+
+### Live paper trading on a real feed (no orders sent)
+```bash
+python -m jaxon paper-live configs/live_coinbase_btc.yaml --state-dir runs/live_paper
+```
+It polls Coinbase's public 5-minute candles and uses only closed candles. It loads 12 days of history to warm up the indicators, then
+runs each new candle through the same engine as the backtest. State is saved after every candle, so it resumes after a restart.
+A feed that goes quiet is logged as stale, and new entries are blocked until fresh bars arrive.
+
+### Layout
+| module | role |
+|---|---|
+| `jaxon/config.py` | strict YAML config; rejects missing instrument metadata and unknown keys |
+| `jaxon/calendar.py` | exchange sessions (DST-aware, overnight sessions, holidays, early closes), risk day |
+| `jaxon/data/csv_source.py` | CSV import, UTC normalization, validation report, provenance |
+| `jaxon/data/download.py` | real-data downloaders (Binance archive, Coinbase) |
+| `jaxon/data/fixtures.py` | synthetic fixtures (random and scripted scenario) |
+| `jaxon/bars.py` | 5m/30m/4H aggregation; only complete, closed bars |
+| `jaxon/indicators.py` | strict pivots, Wilder ATR, session VWAP, stale-feed monitor |
+| `jaxon/strategy.py` | the rules and the per-symbol state machine (no broker access) |
+| `jaxon/risk.py` | position sizing and limit checks |
+| `jaxon/execution/` | adapter interfaces + deterministic paper execution model |
+| `jaxon/engine.py` | the one event loop used by backtest, replay and live paper |
+| `jaxon/replay.py`, `jaxon/live_paper.py` | persisted paper modes with restart recovery |
+| `jaxon/evaluation.py`, `jaxon/report.py`, `jaxon/chart.py` | splits, sensitivity, metrics, exports, chart |
+| `jaxon/explain.py` | optional LLM explanation of logged decisions (cannot change any decision) |
+
+Docs: [`assumptions.md`](docs/assumptions.md) (video rules vs. design choices) ·
+[`csv_schema.md`](docs/csv_schema.md) · [`integration.md`](docs/integration.md) (broker/feed interfaces for later).

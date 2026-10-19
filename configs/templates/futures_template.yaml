@@ -1,0 +1,26 @@
+# TEMPLATE ONLY — fill in from your exchange's contract specs. Not runnable as-is
+# (no data file). Shows how futures metadata differs from equities.
+config_version: "template-futures"
+example: true
+portfolio: {starting_equity: 100000, currency: USD, risk_day_timezone: America/Chicago, risk_day_reset: "17:00"}
+instruments:
+  - symbol: ES_CONTINUOUS        # back-adjusted continuous contract: document your roll method
+    asset_class: future
+    currency: USD
+    tick_size: 0.25
+    lot_size: 1                  # contracts
+    min_quantity: 1
+    value_per_point: 50.0        # E-mini S&P: $50 per index point per contract
+    initial_margin_per_unit: 15000   # check your broker; changes over time
+    volume_type: exchange
+    session:                     # CME Globex: 17:00 previous day -> 16:00 CT, Sun-Fri open
+      timezone: America/Chicago
+      open: "17:00"
+      close: "16:00"
+      trading_weekdays: [0, 1, 2, 3, 4]
+      flatten_minutes_before_close: 5
+      last_entry_minutes_before_close: 30
+    bars: {base_interval_minutes: 1, four_hour_alignment: session_open}
+    costs: {spread_ticks: 1, slippage_ticks: 1, commission_per_unit: 2.25}
+    data: {path: ../../data/ES_1m.csv, synthetic: false}
+risk: {max_leverage: 20.0, max_margin_usage: 0.5}
