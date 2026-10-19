@@ -1,3 +1,17 @@
+# TradingView files
+
+| file | what it is | how to add |
+|---|---|---|
+| `jaxon_signals_indicator.pine` | **Indicator**: BUY/SELL labels, entry/stop/target lines, PRO cloud, confirmation scores, zones, alerts. Mode switch: PRO Breakout / PRO Breakout + 4H filter / 4H System / 4H System + PRO filter | Pine Editor → Open → **New blank indicator** → paste → Save → Add to chart |
+| `jaxon_pro_breakout_strategy.pine` | **Strategy**: the same rules with simulated orders, for the Strategy Tester | Pine Editor → Open → **New blank strategy** → paste → Save → Add to chart |
+
+Indicator notes:
+- BUY/SELL print on closed bars only. Hover a label to see entry, stop, target 1 and the 8-point confirmation checklist (plus the 4H trend).
+- "4H System" gives buys (4H up, pullback into demand, 5m break up) **and** mirrored sells (4H down, rally into supply, 5m break down). Use a 5-minute chart.
+- PRO modes use the original 5-step ATR target ladder. The 4H System uses VWAP as its single target unless you pick "PRO ATR targets".
+- Alerts: right-click the chart → Add alert → condition "JAXON Signals" → BUY signal / SELL signal / Stop hit / Target hit.
+- Backtest result (see `docs/prop_study_2025.md`): on 2025 BTC/ETH, these signals had a negative edge even before costs. Use them for study, not as proven entries.
+
 # JAXON x PRO Breakout — TradingView strategy
 
 File: `jaxon_pro_breakout_strategy.pine` (Pine Script v5, `strategy()`, so it runs in the Strategy Tester).
