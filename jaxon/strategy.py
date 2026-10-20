@@ -62,6 +62,12 @@ class StrategyCore:
         self.locked = False
         self.position_open = False
         self.entry_pending = False
+        # zone_tap inputs (all from CLOSED bars)
+        from .pro import _Ema
+        self.last4h_green = False
+        self.ema30 = _Ema(cfg.tap_ema_len)
+        self.ema30_down = False
+        self.swings30_down = False
 
     # ------------------------------------------------------------ state
     def _to(self, new: State, ts: pd.Timestamp, reason: str = "", **ids):
@@ -110,6 +116,7 @@ class StrategyCore:
         if bias != self.bias:
             self.j.log(t, "bias", self.symbol, bias=bias, previous=self.bias, **detail)
         self.bias, self.bias_detail = bias, detail
+        self.last4h_green = bar.close > bar.open
         self.settle(t, f"4h_bias_{bias}")
 
     # ------------------------------------------------------------ 30m
@@ -153,7 +160,21 @@ class StrategyCore:
         self.atr30.update(bar)
         self.p30.on_bar(bar)
         self.recent30.append(bar)
+        prev = self.ema30.v
+        e = self.ema30.update(bar.close)
+        self.ema30_down = e is not None and prev is not None and bar.close < e and e < prev
+        hs, ls = self.p30.last("high", 2, t), self.p30.last("low", 2, t)
+        self.swings30_down = len(hs) == 2 and len(ls) == 2 and hs[1].price < hs[0].price and ls[1].price < ls[0].price
         self.settle(t)
+
+    def tap_long_allowed(self) -> bool:
+        """Zone-tap filters: 4H rule says up AND the 30m chart is pulling back (downtrend)."""
+        c = self.cfg
+        green, swing = self.last4h_green, self.bias == "bullish"
+        htf = green if c.tap_htf_filter == "green_candle" else swing if c.tap_htf_filter == "swing_trend" else (green and swing)
+        mtf = (self.ema30_down if c.tap_mtf_trend == "ema" else self.swings30_down if c.tap_mtf_trend == "swings"
+               else (self.ema30_down or self.swings30_down))
+        return htf and mtf
 
     # ------------------------------------------------------------ 5m
     def _pullback_ok(self) -> bool:

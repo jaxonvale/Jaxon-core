@@ -1,0 +1,304 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//
+// JAXON Zone Tap -> VWAP — STRATEGY (for TradingView's Strategy Tester)
+//
+//   BUY : last closed 4H candle GREEN (or 4H swing uptrend) + 30m chart in a DOWNTREND
+//         -> resting BUY LIMIT at the top of the nearest unused 30m demand zone
+//         -> stop just below the zone, target = session VWAP (frozen when the order fills)
+//   SELL: last closed 4H candle RED + 30m UPTREND -> SELL LIMIT at the bottom of the nearest supply zone,
+//         stop just above the zone, target = VWAP
+//
+// Orders are real resting limit orders, so fills happen only if price actually trades to the zone.
+// Higher-timeframe values come from CLOSED 4H/30m bars only (no repainting). Use a 5-minute chart.
+
+//@version=5
+strategy("JAXON Zone Tap -> VWAP [Strategy]", shorttitle="JAXON Zone Tap", overlay=true,
+     initial_capital=50000, currency=currency.USD, pyramiding=0,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract, commission_value=1.25, slippage=1,
+     process_orders_on_close=false, calc_on_every_tick=false, use_bar_magnifier=true,
+     max_boxes_count=200, max_bars_back=500)
+
+// ============================================================ INPUTS
+G_R = "1. Rules"
+htf_tf     = input.timeframe("240", "Trend timeframe (4H)", group=G_R)
+htf_rule   = input.string("Green/red 4H candle", "4H rule", options=["Green/red 4H candle", "4H swing trend", "Both"], group=G_R)
+mtf_tf     = input.timeframe("30", "Pullback + zone timeframe (30m)", group=G_R)
+mtf_rule   = input.string("EMA trend", "30m trend rule", options=["EMA trend", "Lower highs & lows", "Either"], group=G_R)
+mtf_ema    = input.int(21, "30m EMA length", minval=2, group=G_R)
+allow_long = input.bool(true, "Take BUYS", group=G_R, inline="d")
+allow_short = input.bool(true, "Take SELLS", group=G_R, inline="d")
+
+G_Z = "2. Zones"
+piv_l     = input.int(2, "Swing bars left", minval=1, maxval=10, group=G_Z)
+piv_r     = input.int(2, "Swing bars right", minval=1, maxval=10, group=G_Z)
+atr_len   = input.int(14, "Zone ATR length", minval=2, group=G_Z)
+disp_mult = input.float(1.5, "Impulse candle body >= x ATR", minval=0.25, step=0.25, group=G_Z)
+base_lb   = input.int(5, "Base candle lookback", minval=1, maxval=10, group=G_Z)
+zone_exp  = input.int(48, "Zone expiry (30m bars)", minval=1, group=G_Z)
+stop_ticks = input.int(1, "Stop: ticks beyond the zone", minval=0, group=G_Z)
+min_rr    = input.float(1.5, "Min reward/risk to VWAP", minval=0.25, step=0.25, group=G_Z)
+
+G_K = "3. Risk & session"
+risk_cash   = input.float(125, "Risk per trade ($)", minval=1, group=G_K, tooltip="$125 = 0.25% of a $50K account")
+qty_step    = input.float(1, "Quantity step", minval=0.00000001, group=G_K)
+max_qty     = input.float(50, "Max quantity", minval=0.00000001, group=G_K, tooltip="Topstep 50K: 5 minis / 50 micros")
+max_entries = input.int(3, "Max entries per day", minval=1, group=G_K)
+daily_loss  = input.float(500, "Max daily loss ($) — stops trading for the day", minval=1, group=G_K)
+use_flat    = input.bool(true, "Flatten before session end", group=G_K)
+sess_tz     = input.string("America/Chicago", "Session timezone", group=G_K)
+flat_hhmm   = input.int(1510, "Flatten at HHMM", group=G_K, tooltip="Topstep: flat by 3:10 PM CT")
+last_hhmm   = input.int(1500, "No new orders at/after HHMM", group=G_K)
+open_hhmm   = input.int(1700, "Session opens HHMM", group=G_K, tooltip="CME futures 1700 (Chicago). US stocks 0930 (New York). Crypto 0000 (UTC).")
+
+G_V = "4. Visuals"
+show_zones = input.bool(true, "Show zones", group=G_V)
+buy_color  = input.color(#27a69b, "Buy", group=G_V, inline="c")
+sell_color = input.color(#b63632, "Sell", group=G_V, inline="c")
+
+strategy.risk.max_intraday_loss(daily_loss, strategy.cash)
+
+// ============================================================ HELPERS
+f_piv_hi(l, r) =>
+    float c = high[r]
+    bool ok = not na(c)
+    for i = 0 to l + r
+        if i != r and (na(high[i]) or high[i] >= c)
+            ok := false
+    ok ? c : float(na)
+
+f_piv_lo(l, r) =>
+    float c = low[r]
+    bool ok = not na(c)
+    for i = 0 to l + r
+        if i != r and (na(low[i]) or low[i] <= c)
+            ok := false
+    ok ? c : float(na)
+
+f_bias(l, r) =>
+    ph = f_piv_hi(l, r)
+    pl = f_piv_lo(l, r)
+    h0 = ta.valuewhen(not na(ph), ph, 0)
+    h1 = ta.valuewhen(not na(ph), ph, 1)
+    l0 = ta.valuewhen(not na(pl), pl, 0)
+    l1 = ta.valuewhen(not na(pl), pl, 1)
+    int b = na(h1) or na(l1) ? 0 : (h0 > h1 and l0 > l1 ? 1 : (h0 < h1 and l0 < l1 ? -1 : 0))
+    [b[1], close[1] > open[1], close[1] < open[1]]
+
+f_zones(mult, alen, lb, l, r) =>
+    a = ta.atr(alen)
+    ph = f_piv_hi(l, r)
+    pl = f_piv_lo(l, r)
+    sh = ta.valuewhen(not na(ph), ph, 0)
+    sl = ta.valuewhen(not na(pl), pl, 0)
+    float shb = sh[1]
+    float slb = sl[1]
+    float body = math.abs(close - open)
+    bool big = not na(a[1]) and body >= mult * a[1]
+    bool bull = big and close > open and not na(shb) and close > shb
+    bool bear = big and close < open and not na(slb) and close < slb
+    float d_lo = na
+    float d_hi = na
+    float s_lo = na
+    float s_hi = na
+    if bull
+        for i = 1 to lb
+            if close[i] < open[i]
+                d_lo := low[i]
+                d_hi := high[i]
+                break
+    if bear
+        for i = 1 to lb
+            if close[i] > open[i]
+                s_lo := low[i]
+                s_hi := high[i]
+                break
+    bool dnew = bull and not na(d_lo)
+    bool snew = bear and not na(s_lo)
+    [dnew[1], d_lo[1], d_hi[1], snew[1], s_lo[1], s_hi[1], time_close[1], close[1]]
+
+f_t30(len, l, r) =>
+    e = ta.ema(close, len)
+    ph = f_piv_hi(l, r)
+    pl = f_piv_lo(l, r)
+    a0 = ta.valuewhen(not na(ph), ph, 0)
+    a1 = ta.valuewhen(not na(ph), ph, 1)
+    b0 = ta.valuewhen(not na(pl), pl, 0)
+    b1 = ta.valuewhen(not na(pl), pl, 1)
+    bool dn_e = close < e and e < e[1]
+    bool up_e = close > e and e > e[1]
+    bool dn_s = not na(a1) and not na(b1) and a0 < a1 and b0 < b1
+    bool up_s = not na(a1) and not na(b1) and a0 > a1 and b0 > b1
+    [dn_e[1], up_e[1], dn_s[1], up_s[1]]
+
+// ============================================================ HIGHER TIMEFRAMES (closed bars only)
+[bias_raw, g4, r4] = request.security(syminfo.tickerid, htf_tf, f_bias(piv_l, piv_r), lookahead=barmerge.lookahead_on)
+int bias = nz(bias_raw)
+bool htf_long_ok  = htf_rule == "Green/red 4H candle" ? g4 : htf_rule == "4H swing trend" ? bias == 1 : (g4 and bias == 1)
+bool htf_short_ok = htf_rule == "Green/red 4H candle" ? r4 : htf_rule == "4H swing trend" ? bias == -1 : (r4 and bias == -1)
+
+[t_dn_e, t_up_e, t_dn_s, t_up_s] = request.security(syminfo.tickerid, mtf_tf, f_t30(mtf_ema, piv_l, piv_r), lookahead=barmerge.lookahead_on)
+bool mtf_down = mtf_rule == "EMA trend" ? t_dn_e : mtf_rule == "Lower highs & lows" ? t_dn_s : (t_dn_e or t_dn_s)
+bool mtf_up   = mtf_rule == "EMA trend" ? t_up_e : mtf_rule == "Lower highs & lows" ? t_up_s : (t_up_e or t_up_s)
+
+[d_new, d_lo_in, d_hi_in, s_new, s_lo_in, s_hi_in, z_t, c30_1] = request.security(syminfo.tickerid, mtf_tf,
+     f_zones(disp_mult, atr_len, base_lb, piv_l, piv_r), lookahead=barmerge.lookahead_on)
+bool new30 = not na(z_t) and z_t != nz(z_t[1])
+
+vw = ta.vwap(hlc3, timeframe.change("1D"))
+
+// ============================================================ ZONES
+var float[] zl_a = array.new_float()
+var float[] zh_a = array.new_float()
+var int[]   zt_a = array.new_int()
+var int[]   zd_a = array.new_int()
+var int[]   zb_a = array.new_int()
+var int[]   zs_a = array.new_int()
+var bool[]  zu_a = array.new_bool()
+var box[]   zx_a = array.new_box()
+
+f_end_box(b) =>
+    if not na(b)
+        box.set_right(b, bar_index)
+        box.set_extend(b, extend.none)
+
+f_add_zone(dir, lo, hi) =>
+    array.push(zl_a, lo)
+    array.push(zh_a, hi)
+    array.push(zt_a, z_t)
+    array.push(zd_a, dir)
+    array.push(zb_a, 0)
+    array.push(zs_a, 0)
+    array.push(zu_a, false)
+    box bx = na
+    if show_zones
+        col = dir == 1 ? buy_color : sell_color
+        bx := box.new(bar_index, hi, bar_index + 1, lo, border_color=color.new(col, 30), bgcolor=color.new(col, 85), extend=extend.right)
+    array.push(zx_a, bx)
+
+if new30 and not na(c30_1)
+    n = array.size(zl_a)
+    if n > 0
+        for k = 0 to n - 1
+            if array.get(zs_a, k) == 0
+                array.set(zb_a, k, array.get(zb_a, k) + 1)
+                int dir = array.get(zd_a, k)
+                bool broken = dir == 1 ? c30_1 < array.get(zl_a, k) : c30_1 > array.get(zh_a, k)
+                if broken or array.get(zb_a, k) >= zone_exp
+                    array.set(zs_a, k, broken ? 1 : 2)
+                    f_end_box(array.get(zx_a, k))
+    if d_new
+        f_add_zone(1, d_lo_in, d_hi_in)
+    if s_new
+        f_add_zone(-1, s_lo_in, s_hi_in)
+    if array.size(zl_a) > 60 and array.get(zs_a, 0) != 0
+        array.shift(zl_a)
+        array.shift(zh_a)
+        array.shift(zt_a)
+        array.shift(zd_a)
+        array.shift(zb_a)
+        array.shift(zs_a)
+        array.shift(zu_a)
+        array.shift(zx_a)
+
+// nearest unused active zone on the correct side of price (demand below close, supply above close)
+f_waiting(dir) =>
+    int pick = -1
+    n = array.size(zl_a)
+    if n > 0
+        for k = n - 1 to 0
+            if array.get(zd_a, k) == dir and array.get(zs_a, k) == 0 and not array.get(zu_a, k)
+                bool side_ok = dir == 1 ? close > array.get(zh_a, k) : close < array.get(zl_a, k)
+                if side_ok
+                    pick := k
+                    break
+    pick
+
+f_index_of(t, dir) =>
+    int idx = -1
+    n = array.size(zt_a)
+    if n > 0
+        for k = 0 to n - 1
+            if array.get(zt_a, k) == t and array.get(zd_a, k) == dir
+                idx := k
+    idx
+
+f_qty(entry, stop) =>
+    float per_unit = math.abs(entry - stop) * syminfo.pointvalue
+    float q = per_unit > 0 ? math.floor(risk_cash / per_unit / qty_step) * qty_step : 0.0
+    math.min(q, max_qty)
+
+// ============================================================ SESSION / DAY LIMITS
+f_min(x) =>
+    math.floor(x / 100) * 60 + x % 100
+// minutes since the session opened (works for overnight sessions like CME 17:00 -> 16:00)
+int m_now  = (hour(time_close, sess_tz) * 60 + minute(time_close, sess_tz) - f_min(open_hhmm) + 1440) % 1440
+int m_last = (f_min(last_hhmm) - f_min(open_hhmm) + 1440) % 1440
+int m_flat = (f_min(flat_hhmm) - f_min(open_hhmm) + 1440) % 1440
+bool in_window = not use_flat or m_now < m_last
+var int entries_today = 0
+if timeframe.change("1D")
+    entries_today := 0
+
+// ============================================================ ORDER MANAGEMENT
+var int pend_dir = 0
+var int pend_t = na
+var float pos_stop = na
+var float pos_tgt = na
+
+// a fill just happened: consume that zone's single attempt and freeze the levels
+if strategy.position_size != 0 and strategy.position_size[1] == 0
+    entries_today += 1
+    zi = f_index_of(pend_t, pend_dir)
+    if zi >= 0
+        array.set(zu_a, zi, true)
+    pend_dir := 0
+
+bool flat = strategy.position_size == 0
+if flat and barstate.isconfirmed
+    int want = 0
+    float lim = na
+    float stp = na
+    float tgt = vw
+    int zt_pick = na
+    if in_window and entries_today < max_entries
+        if allow_long and htf_long_ok and mtf_down
+            k = f_waiting(1)
+            if k >= 0
+                lim := array.get(zh_a, k)
+                stp := array.get(zl_a, k) - stop_ticks * syminfo.mintick
+                if tgt > lim and (tgt - lim) / (lim - stp) >= min_rr
+                    want := 1
+                    zt_pick := array.get(zt_a, k)
+        if want == 0 and allow_short and htf_short_ok and mtf_up
+            k = f_waiting(-1)
+            if k >= 0
+                lim := array.get(zl_a, k)
+                stp := array.get(zh_a, k) + stop_ticks * syminfo.mintick
+                if tgt < lim and (lim - tgt) / (stp - lim) >= min_rr
+                    want := -1
+                    zt_pick := array.get(zt_a, k)
+    if want != 0
+        q = f_qty(lim, stp)
+        if q > 0
+            string id = want == 1 ? "TAP L" : "TAP S"
+            strategy.cancel(want == 1 ? "TAP S" : "TAP L")
+            strategy.entry(id, want == 1 ? strategy.long : strategy.short, qty=q, limit=lim, comment=want == 1 ? "BUY zone tap" : "SELL zone tap")
+            strategy.exit(id + " x", id, stop=stp, limit=tgt, comment_loss="Stop", comment_profit="VWAP target")
+            pend_dir := want
+            pend_t := zt_pick
+            pos_stop := stp
+            pos_tgt := tgt
+    else
+        strategy.cancel("TAP L")
+        strategy.cancel("TAP S")
+        pend_dir := 0
+
+if use_flat and strategy.position_size != 0 and m_now >= m_flat
+    strategy.close_all(comment="Session flatten")
+
+// ============================================================ PLOTS
+plot(vw, "Session VWAP", color=color.new(#f08c00, 0), linewidth=2)
+plot(strategy.position_size != 0 ? pos_stop : na, "Stop", color=color.new(#e03131, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? pos_tgt : na, "Target", color=color.new(#1c7ed6, 0), style=plot.style_linebr, linewidth=2)
+bgcolor(htf_long_ok and mtf_down ? color.new(buy_color, 93) : htf_short_ok and mtf_up ? color.new(sell_color, 93) : na, title="Setup active")

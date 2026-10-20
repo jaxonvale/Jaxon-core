@@ -88,6 +88,11 @@ class PaperBroker(ExecutionAdapter):
         live = [o for o in self.open_orders(bar.symbol) if o.active_from <= bar.start]
         fills: list[Fill] = []
 
+        for o in [o for o in live if o.kind == "limit" and o.side == "buy"]:   # resting buy limit (entry)
+            if bar.open + cm.half_spread <= o.price:
+                fills.append(self._fill(o, bar.open + cm.half_spread, bar.open, bar, True, ["filled_at_open_below_limit"]))
+            elif bar.low + cm.half_spread <= o.price:
+                fills.append(self._fill(o, o.price, o.price - cm.half_spread, bar, False))
         for o in [o for o in live if o.kind == "market"]:
             px = cm.buy_market(bar.open) if o.side == "buy" else cm.sell_market(bar.open)
             fills.append(self._fill(o, px, bar.open, bar, True))
@@ -98,7 +103,7 @@ class PaperBroker(ExecutionAdapter):
 
         groups: dict[str, list[Order]] = {}
         for o in live:
-            if o.status == "open" and o.kind in ("stop", "limit"):
+            if o.status == "open" and o.kind in ("stop", "limit") and o.side == "sell":
                 groups.setdefault(o.oco_group or o.order_id, []).append(o)
         tt = cm.tick if self.cfg.limit_requires_trade_through else 0.0
         for grp in groups.values():
