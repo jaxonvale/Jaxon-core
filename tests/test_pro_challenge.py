@@ -109,3 +109,54 @@ def test_intraday_trailing_with_cap_and_expiry():
 
 def test_scale_multiplies_pnl():
     assert simulate(days_from([300] * 20), TS, scale=2.0)[0].calendar_days == 5
+
+
+# ---------------------------------------------------------------- zone tap + Lucid
+def test_buy_limit_fills_only_when_touched():
+    from jaxon.config import ExecutionConfig
+    from jaxon.execution.paper import PaperBroker
+    from jaxon.models import Order
+    from tests.helpers import cfg
+    inst = cfg(costs={"spread_ticks": 0, "slippage_ticks": 0}).instruments[0]
+    b = PaperBroker({"TEST": inst}, ExecutionConfig())
+    b.submit(Order("E", "TEST", "buy", "limit", 10, ts("2025-01-01"), 100.0, "entry"))
+    assert b.process_bar(bar("2025-01-01 00:00", 101, 102, 100.5, 101)) == []
+    f = b.process_bar(bar("2025-01-01 00:05", 101, 101, 99.5, 100))[0]
+    assert f.price == 100.0 and f.purpose == "entry"
+    b.submit(Order("E2", "TEST", "buy", "limit", 10, ts("2025-01-01"), 100.0, "entry"))
+    f2 = b.process_bar(bar("2025-01-01 00:10", 98, 99, 97, 98))[0]          # gap below: better fill at open
+    assert f2.price == 98.0
+
+
+def test_zone_tap_filters():
+    from tests.helpers import CoreScenario
+    s = CoreScenario()
+    core = s.core
+    core.last4h_green, core.ema30_down = True, True
+    assert core.tap_long_allowed()
+    core.last4h_green = False
+    assert not core.tap_long_allowed()
+    core.cfg.tap_htf_filter = "swing_trend"
+    assert core.tap_long_allowed()                    # scenario has a bullish 4H swing bias
+    core.ema30_down = False
+    assert not core.tap_long_allowed()
+
+
+def test_zone_tap_mode_runs_and_uses_limit_entries():
+    c = scenario_cfg()
+    c.strategy.mode = "zone_tap"
+    r = run(c, scenario_data(c))
+    for s in r.engine.setups():
+        assert s.proposed_entry == s.zone_upper or abs(s.proposed_entry - s.zone_upper) < 0.011
+        assert s.stop < s.zone_lower and s.target > s.proposed_entry
+
+
+def test_lucid_presets_lock_at_start_plus_100():
+    r = PRESETS["lucidpro_25k"]
+    # +1,200 day lifts EOD high to 26,200 -> threshold min(25,200, 25,100) = 25,100
+    days = days_from([1200, 0], intraday={1: [1200, 101, 150]})     # dips to 25,101 -> survives
+    assert simulate(days, r)[0].outcome == "unresolved"
+    days = days_from([1200, 0], intraday={1: [1200, 100, 150]})     # touches 25,100 -> breach
+    assert simulate(days, r)[0].outcome == "failed"
+    assert simulate(days_from([700, 600]), PRESETS["lucidflex_25k"])[0].outcome == "unresolved"   # 700/1300 > 40%
+    assert simulate(days_from([400, 400, 450]), PRESETS["lucidflex_25k"])[0].outcome == "passed"

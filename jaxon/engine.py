@@ -145,6 +145,8 @@ class TradingEngine:
 
         if rt.pending is not None:
             self._try_entry(rt, bar)
+        if self.cfg.strategy.mode in ("zone_tap", "zone_tap_pro"):
+            self._zone_tap(rt, bar)
         entry_filled = self._handle_fills(rt, self.broker.process_bar(bar), bar)
         if entry_filled:   # protective orders are active from the entry fill: check this same bar
             self._handle_fills(rt, self.broker.process_bar(bar), bar)
@@ -170,6 +172,8 @@ class TradingEngine:
                     self._submit_exit(rt, b5.end, "pro_sell_signal")
                 if ps.long_entry and can:
                     self._on_pro_signal(rt, b5, ps)
+            elif mode in ("zone_tap", "zone_tap_pro"):
+                pass                            # entries come from _zone_tap (resting limit orders)
             else:
                 confirmed = core.on_5m(b5, FiveMinContext(can, rt.session.close))
                 if confirmed is not None:
@@ -268,6 +272,67 @@ class TradingEngine:
                     reason = "costs_exceed_reward"
                 plan = SignalPlan(not reason, reason, b5.close, stop, tgt, rr)
         self._gate_and_submit(rt, s, plan, b5, vwap)
+
+    def _zone_tap(self, rt: SymbolRuntime, bar: Bar):
+        """Resting buy-limit at the top of the most recent unused demand zone, armed only while the
+        last closed 4H candle is green (or 4H swings up) and the 30m chart is in a downtrend.
+        Everything used is known before this bar: closed 4H/30m bars, the previous close and the
+        VWAP before this bar. The order is submitted only if this bar would touch it, which is
+        exactly what a resting limit order does."""
+        sc, core, cm, inst = self.cfg.strategy, rt.core, rt.cm, rt.inst
+        if (rt.trade is not None or rt.pending is not None or self.locked or rt.session is None
+                or self.entries_today >= self.cfg.risk.max_entries_per_session
+                or self._positions_and_pending() >= self.cfg.risk.max_open_positions
+                or bar.start >= rt.session.last_entry_at or rt.feed.entries_blocked
+                or bar.session_id != rt.session.session_id):
+            return
+        if not core.tap_long_allowed():
+            return
+        if sc.mode == "zone_tap_pro" and (rt.pro_state is None or rt.pro_state.trend != 1):
+            return
+        vwap, why = rt.vwap.value()            # VWAP before this bar is added
+        if vwap is None or rt.last_close is None:
+            return
+        zones = [z for z in core.zones if z.status == "active" and not z.attempt_used
+                 and z.activated_at <= bar.start and rt.last_close > z.upper]
+        if not zones:
+            return
+        z = max(zones, key=lambda q: (q.activated_at, q.zone_id))
+        tick = inst.tick_size
+        limit = floor_tick(z.upper, tick)
+        stop = floor_tick(z.lower - sc.stop_offset_ticks * tick, tick)
+        target = floor_tick(vwap, tick)
+        if not (stop < limit < target) or (target - limit) / (limit - stop) < sc.min_reward_risk:
+            return
+        if (target - limit) * cm.vpp - 2 * cm.commission_per_unit(limit) <= 0:
+            return
+        if not (bar.low + cm.half_spread <= limit):
+            return                              # the resting order would not be reached this bar
+        eq = self.cfg.portfolio.starting_equity if self.cfg.risk.size_from == "starting_equity" else self.equity()
+        size = size_position(eq, limit, stop, inst, cm, self.cfg.risk, self.open_risk_cash())
+        if not size.ok:
+            return
+        t = bar.start
+        from .models import Setup
+        nan = float("nan")
+        s = Setup(self.ids.new("S", inst.symbol, t), inst.symbol, z.zone_id, z.lower, z.upper, z.activated_at, t,
+                  bar.start, nan, bar.start, t, bar.low, core.htf_swings(t), core.bias, status="confirmed", confirm_at=t)
+        s.vwap_snapshot, s.vwap_note = vwap, "bar_based_vwap_approximation (before tap bar)"
+        s.proposed_entry, s.stop, s.target, s.proposed_rr = limit, stop, target, (target - limit) / (limit - stop)
+        s.quantity = size.quantity
+        z.attempt_used = True
+        core.setups.append(s)
+        core._to(State.ZONE_TOUCHED, t, "zone_tap", setup_id=s.setup_id, zone_id=z.zone_id)
+        sig = Signal(self.ids.new("G", inst.symbol, t), s.setup_id, inst.symbol, t, limit, stop, target, z.zone_id)
+        order = Order(self.ids.new("O", inst.symbol, t), inst.symbol, "buy", "limit", size.quantity, t, limit,
+                      purpose="entry", signal_id=sig.signal_id, setup_id=s.setup_id)
+        s.signal_id, s.order_id = sig.signal_id, order.order_id
+        self.signals.append(sig)
+        rt.planned, rt.trade_setup = size, s
+        self.broker.submit(order)
+        self.journal.log(t, "signal", inst.symbol, signal_id=sig.signal_id, setup_id=s.setup_id, signal_type="zone_tap_limit",
+                         entry=limit, stop=stop, target=target, rr=s.proposed_rr, vwap=vwap, zone=[z.lower, z.upper])
+        core.mark_pending(s, t)
 
     def _gate_and_submit(self, rt: SymbolRuntime, s: Setup, plan, b5: Bar, vwap):
         t, inst, cm = b5.end, rt.inst, rt.cm

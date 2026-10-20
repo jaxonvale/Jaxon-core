@@ -130,7 +130,7 @@ def cmd_prop_study(a):
     import pandas as pd
     risks = [float(x) / 100 for x in a.risk] if a.risk else RISKS
     variants = {k: v for k, v in VARIANTS.items() if not a.variant or k in a.variant}
-    study(a.config, a.out, variants, risks, a.workers)
+    study(a.config, a.out, variants, risks, a.workers, a.presets)
     df = pd.read_csv(Path(a.out) / "prop_study.csv")
     print(df.to_string(index=False))
 
@@ -185,6 +185,7 @@ def main(argv=None) -> int:
     s.add_argument("config"); s.add_argument("--out", default="runs/prop_study")
     s.add_argument("--risk", nargs="*", help="risk per trade in %, e.g. 0.25 0.5 1")
     s.add_argument("--variant", nargs="*"); s.add_argument("--workers", type=int, default=4)
+    s.add_argument("--presets", nargs="*", help="challenge presets to test (default: all)")
     s.set_defaults(f=cmd_prop_study)
 
     s = sub.add_parser("download", help="download REAL historical OHLCV (public, no credentials) to CSV")

@@ -15,6 +15,10 @@ from .config import Config, load_config
 from .report import _trades_df, metrics
 
 VARIANTS = {
+    "Z_zone_tap_green4h_ema30": {"mode": "zone_tap", "tap_htf_filter": "green_candle", "tap_mtf_trend": "ema"},
+    "Z_zone_tap_swing4h_ema30": {"mode": "zone_tap", "tap_htf_filter": "swing_trend", "tap_mtf_trend": "ema"},
+    "Z_zone_tap_green4h_swings30": {"mode": "zone_tap", "tap_htf_filter": "green_candle", "tap_mtf_trend": "swings"},
+    "Z_zone_tap_plus_PRO": {"mode": "zone_tap_pro", "tap_htf_filter": "green_candle", "tap_mtf_trend": "ema"},
     "A_bot_rules_vwap_target": {"mode": "jaxon", "target_mode": "vwap"},
     "B_bot_plus_PRO_filter": {"mode": "jaxon_pro", "target_mode": "pro_atr"},
     "C_PRO_signals_with_bot_rules": {"mode": "pro_breakout", "target_mode": "pro_atr", "pro_require_bias": True},
@@ -24,6 +28,7 @@ RISKS = [0.0025, 0.005, 0.01]
 
 _DATA = None
 _CFG = None
+_PRESETS = None
 
 
 def _job(args):
@@ -42,13 +47,16 @@ def _job(args):
            "signals": len(e.signals), "setups": len(e.setups()), "zones": len(e.zones()),
            "trade_stats": stats, "challenges": {}}
     for key, rules in PRESETS.items():
+        if _PRESETS and key not in _PRESETS:
+            continue
         days = build_days(e.equity_curve, e.trades, rules)
         out["challenges"][key] = summarize(simulate(days, rules), rules)
     return out
 
 
-def study(config_path: str, out_dir: str, variants=None, risks=None, workers: int = 4) -> list[dict]:
-    global _DATA, _CFG
+def study(config_path: str, out_dir: str, variants=None, risks=None, workers: int = 4, presets=None) -> list[dict]:
+    global _DATA, _CFG, _PRESETS
+    _PRESETS = presets
     _CFG = load_config(config_path)
     _DATA = load_data(_CFG)
     jobs = [(n, o, r) for n, o in (variants or VARIANTS).items() for r in (risks or RISKS)]

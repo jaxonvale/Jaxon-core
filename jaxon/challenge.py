@@ -56,6 +56,36 @@ PRESETS = {
     "apex_50k_intraday": ChallengeRules(
         "Apex 50K (intraday trailing, 2026 rules)", 50_000, 3_000, 2_000, "intraday", 100.0, None, 30, 1,
         notes="$2,000 drawdown trails the highest unrealized equity in real time, stops at start+$100; 30 days."),
+    # ---- Lucid Trading (support.lucidtrading.com, read 2026-10-20). Trading day resets 6:00 PM ET;
+    # flat by 4:45 PM ET; MLL trails the end-of-day balance and locks at start+$100 once the
+    # balance passes start+MLL+$100. Daily loss limits are SOFT (pause until next session) and are
+    # covered by the bot's own tighter daily lockout, so they are not modeled separately.
+    "lucidflex_25k": ChallengeRules(
+        "LucidFlex 25K evaluation", 25_000, 1_250, 1_000, "eod", 100.0, 0.40, None, 1, "America/New_York", "18:00",
+        notes="Target $1,250; MLL $1,000 EOD trailing, locks at $25,100; consistency 40% (50% with paid add-on); "
+              "DLL optional; max 2 minis / 20 micros; no time limit."),
+    "lucidflex_50k": ChallengeRules(
+        "LucidFlex 50K evaluation", 50_000, 3_000, 2_000, "eod", 100.0, 0.40, None, 1, "America/New_York", "18:00",
+        notes="Target $3,000; MLL $2,000 EOD trailing, locks at $50,100; consistency 40% (50% add-on); "
+              "DLL optional; max 4 minis / 40 micros; no time limit."),
+    "lucidpro_25k": ChallengeRules(
+        "LucidPro 25K evaluation", 25_000, 1_250, 1_000, "eod", 100.0, None, None, 1, "America/New_York", "18:00",
+        notes="Target $1,250; MLL $1,000 EOD trailing, locks at $25,100; no DLL; no evaluation consistency rule; "
+              "max 2 minis / 20 micros; can pass in one day."),
+    "lucidpro_50k": ChallengeRules(
+        "LucidPro 50K evaluation", 50_000, 3_000, 2_000, "eod", 100.0, None, None, 1, "America/New_York", "18:00",
+        notes="Target $3,000; MLL $2,000 EOD trailing, locks at $50,100; $1,200 soft DLL; no evaluation consistency "
+              "rule; max 4 minis / 40 micros."),
+    "luciddaily_25k_intraday": ChallengeRules(
+        "LucidDaily 25K evaluation (intraday drawdown)", 25_000, 1_250, 1_000, "intraday", 100.0, 0.50, None, 1,
+        "America/New_York", "18:00",
+        notes="Target $1,250; MLL $1,000 intraday trailing (EOD available at higher price); 50% consistency; "
+              "$600 soft DLL; red-folder NEWS TRADING IS A HARD BREACH (not modeled)."),
+    "luciddaily_50k_intraday": ChallengeRules(
+        "LucidDaily 50K evaluation (intraday drawdown)", 50_000, 3_000, 2_000, "intraday", 100.0, 0.50, None, 1,
+        "America/New_York", "18:00",
+        notes="Target $3,000; MLL $2,000 intraday trailing; 50% consistency; $1,200 soft DLL; "
+              "red-folder NEWS TRADING IS A HARD BREACH (not modeled)."),
 }
 
 
