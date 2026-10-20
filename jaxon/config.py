@@ -130,6 +130,8 @@ class StrategyConfig:
     pro_target_n: int = 2
     pro_require_bias: bool = True       # pro_breakout mode: longs only with 4H bullish bias
     pro_exit_on_sell: bool = True       # pro_breakout mode: a SELL signal closes the long
+    pro_timeframe_minutes: int = 5      # chart timeframe for PRO signals: 5, or the base interval (e.g. 1)
+    pro_take_all_signals: bool = False  # True = take every BUY like a manual indicator trader (no R:R / cost filter)
     # --- zone_tap mode: 4H green candle + 30m downtrend -> buy limit at demand zone -> VWAP target ---
     tap_htf_filter: str = "green_candle"   # green_candle | swing_trend | both
     tap_mtf_trend: str = "ema"             # ema | swings | either

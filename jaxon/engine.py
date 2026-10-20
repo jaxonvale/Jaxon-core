@@ -160,20 +160,26 @@ class TradingEngine:
             core.on_4h(b4)
         if b30 is not None:
             core.on_30m(b30)
+        sc = self.cfg.strategy
+        mode = sc.mode
+        can = (not self.locked and self.entries_today < self.cfg.risk.max_entries_per_session
+               and self._positions_and_pending() < self.cfg.risk.max_open_positions)
+        if mode == "pro_breakout":
+            # PRO signals on the chosen timeframe: base bars (e.g. 1-minute chart) or 5-minute bars
+            pro_bar = bar if sc.pro_timeframe_minutes == rt.inst.bars.base_interval_minutes else b5
+            if pro_bar is not None:
+                ps = rt.pro_state = rt.pro.update(pro_bar)
+                if (rt.trade is not None and ps.short_entry and sc.pro_exit_on_sell
+                        and rt.flatten_order_id is None):
+                    self._submit_exit(rt, pro_bar.end, "pro_sell_signal")
+                if ps.long_entry and can:
+                    self._on_pro_signal(rt, pro_bar, ps)
         if b5 is not None:
             rt.bars_5m += 1
-            can = (not self.locked and self.entries_today < self.cfg.risk.max_entries_per_session
-                   and self._positions_and_pending() < self.cfg.risk.max_open_positions)
-            ps = rt.pro_state = rt.pro.update(b5)
-            mode = self.cfg.strategy.mode
-            if mode == "pro_breakout":
-                if (rt.trade is not None and ps.short_entry and self.cfg.strategy.pro_exit_on_sell
-                        and rt.flatten_order_id is None):
-                    self._submit_exit(rt, b5.end, "pro_sell_signal")
-                if ps.long_entry and can:
-                    self._on_pro_signal(rt, b5, ps)
-            elif mode in ("zone_tap", "zone_tap_pro"):
-                pass                            # entries come from _zone_tap (resting limit orders)
+            if mode != "pro_breakout":
+                rt.pro_state = rt.pro.update(b5)
+            if mode in ("pro_breakout", "zone_tap", "zone_tap_pro"):
+                pass                            # entries come from the PRO block above or _zone_tap
             else:
                 confirmed = core.on_5m(b5, FiveMinContext(can, rt.session.close))
                 if confirmed is not None:
@@ -266,9 +272,9 @@ class TradingEngine:
                     reason = "pro_no_4h_bias"
                 elif not tgt > b5.close:
                     reason = "target_not_above_entry"
-                elif rr < sc.min_reward_risk:
+                elif not sc.pro_take_all_signals and rr < sc.min_reward_risk:
                     reason = "rr_below_min"
-                elif rt.cm.net_target_per_unit(b5.close, tgt) <= 0:
+                elif not sc.pro_take_all_signals and rt.cm.net_target_per_unit(b5.close, tgt) <= 0:
                     reason = "costs_exceed_reward"
                 plan = SignalPlan(not reason, reason, b5.close, stop, tgt, rr)
         self._gate_and_submit(rt, s, plan, b5, vwap)
@@ -390,7 +396,8 @@ class TradingEngine:
             reason = "gapped_below_stop"
         elif exec_px >= s.target:
             reason = "gapped_above_target"
-        elif (s.target - exec_px) / (exec_px - s.stop) < cfg.strategy.min_reward_risk:
+        elif (not (cfg.strategy.mode == "pro_breakout" and cfg.strategy.pro_take_all_signals)
+              and (s.target - exec_px) / (exec_px - s.stop) < cfg.strategy.min_reward_risk):
             reason = "entry_rr_below_min"
         size: Optional[SizeResult] = None
         if not reason:
@@ -401,7 +408,7 @@ class TradingEngine:
             else:
                 q = size.quantity
                 net = (s.target - exec_px) * q * cm.vpp - cm.commission(q, exec_px) - cm.commission(q, s.target)
-                if net <= 0:
+                if net <= 0 and not (cfg.strategy.mode == "pro_breakout" and cfg.strategy.pro_take_all_signals):
                     reason = "entry_costs_exceed_reward"
         s.actual_rr = (s.target - exec_px) / (exec_px - s.stop) if exec_px > s.stop else None
         if reason:
