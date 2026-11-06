@@ -1,3 +1,4 @@
 anthropic>=2.6.0
 flask>=3.0
+gunicorn>=23.0
 pytest>=8.0

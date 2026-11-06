@@ -87,6 +87,16 @@ Also: `/api/snapshot`, `/api/tasks` (GET/POST, PATCH `/api/tasks/<id>`), `/api/g
 
 The server binds to localhost by default. If you expose it, set `JAXON_TOKEN`.
 
+## Deploy on Railway
+
+1. Railway → **New Project → Deploy from GitHub repo** → pick this repo.
+2. Service **Settings → Source → Branch**: pick the branch with this code.
+3. **Variables**: `ANTHROPIC_API_KEY`, `JAXON_TOKEN` (a long random password), `JAXON_DB=/data/jaxon.db`.
+4. Right-click the service → **Attach Volume**, mount path `/data` (keeps memory across deploys).
+5. **Settings → Networking → Generate Domain**. Open it, tap the key icon, paste your `JAXON_TOKEN`.
+
+The server (`jaxon/wsgi.py`, run by gunicorn) refuses to start without `JAXON_TOKEN`.
+
 ## Tests
 
 ```bash
