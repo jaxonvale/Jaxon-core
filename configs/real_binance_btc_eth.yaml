@@ -1,0 +1,80 @@
+# ======================================================================
+# REAL HISTORICAL DATA CONFIGURATION (Binance spot, 1-minute bars, 2025).
+# Data: python -m jaxon download ... (see README). Files are not committed;
+# the CSV header records the archive checksums.
+# Costs below are ASSUMPTIONS for small retail orders, not measured fills.
+# Volume is Binance-only (single venue): VWAP is Binance VWAP, not market-wide.
+# Crypto has no exchange session: a UTC day is used for VWAP reset,
+# daily flattening and the daily loss limit.
+# ======================================================================
+config_version: "real-binance-1"
+example: true
+
+portfolio:
+  starting_equity: 100000
+  currency: USD                 # USDT treated as USD (no FX conversion)
+  risk_day_timezone: UTC
+  risk_day_reset: "00:00"
+
+instruments:
+  - symbol: BTCUSDT
+    asset_class: crypto
+    currency: USD
+    tick_size: 0.01
+    lot_size: 0.00001
+    min_quantity: 0.00001
+    min_notional: 5
+    value_per_point: 1.0
+    volume_type: exchange
+    session: &utcday
+      timezone: UTC
+      open: "00:00"
+      close: "24:00"
+      trading_weekdays: [0, 1, 2, 3, 4, 5, 6]
+      flatten_minutes_before_close: 5
+      last_entry_minutes_before_close: 30
+    bars: &bars1m
+      base_interval_minutes: 1
+      four_hour_alignment: utc_epoch
+      stale_gap_bars: 1
+      stale_recovery_bars: 10
+    costs:
+      spread_ticks: 2               # ~$0.02
+      slippage_ticks: 100           # ~$1.00 (~1 bp) per market/stop fill — assumption
+      commission_pct_notional: 0.001   # 0.10% taker, no BNB discount
+    data:
+      path: ../data/real/BTCUSDT_1m_2025.csv
+      synthetic: false
+      description: "Binance spot BTCUSDT 1m, data.binance.vision"
+
+  - symbol: ETHUSDT
+    asset_class: crypto
+    currency: USD
+    tick_size: 0.01
+    lot_size: 0.0001
+    min_quantity: 0.0001
+    min_notional: 5
+    value_per_point: 1.0
+    volume_type: exchange
+    session: *utcday
+    bars: *bars1m
+    costs:
+      spread_ticks: 2
+      slippage_ticks: 30            # ~$0.30 (~1 bp) — assumption
+      commission_pct_notional: 0.001
+    data:
+      path: ../data/real/ETHUSDT_1m_2025.csv
+      synthetic: false
+      description: "Binance spot ETHUSDT 1m, data.binance.vision"
+
+risk:
+  max_leverage: 1.0               # spot, no margin
+
+evaluation:
+  development_end: "2025-07-01"
+  validation_end: "2025-10-01"    # Oct-Dec 2025 = untouched out-of-sample
+  min_trades_for_inference: 100
+  sensitivity:
+    displacement_atr_mult: [1.25, 1.5, 2.0]
+    confirm_window_bars: [4, 6, 8]
+    min_reward_risk: [1.25, 1.5, 2.0]

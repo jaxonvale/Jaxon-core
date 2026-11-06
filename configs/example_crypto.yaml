@@ -1,0 +1,55 @@
+# ======================================================================
+# EXAMPLE CONFIGURATION — NOT A RECOMMENDATION. SYNTHETIC DATA.
+# Crypto trades 24/7: there is no exchange session, so a UTC calendar day is
+# used as the "session" for VWAP reset, flattening and daily limits.
+# Crypto volume is per-venue, not consolidated; VWAP reflects one venue only.
+# ======================================================================
+config_version: "example-crypto-1"
+example: true
+
+portfolio:
+  starting_equity: 100000
+  currency: USD
+  risk_day_timezone: UTC
+  risk_day_reset: "00:00"
+
+instruments:
+  - symbol: SYNTH_BTCUSD
+    asset_class: crypto
+    currency: USD
+    tick_size: 0.1
+    lot_size: 0.0001
+    min_quantity: 0.0001
+    value_per_point: 1.0
+    volume_type: exchange
+    session:
+      timezone: UTC
+      open: "00:00"
+      close: "24:00"
+      trading_weekdays: [0, 1, 2, 3, 4, 5, 6]
+      flatten_minutes_before_close: 5
+      last_entry_minutes_before_close: 30
+    bars:
+      base_interval_minutes: 5
+      four_hour_alignment: utc_epoch       # 00,04,08,12,16,20 UTC
+      stale_gap_bars: 1
+      stale_recovery_bars: 6
+    costs:
+      spread_ticks: 2
+      slippage_ticks: 2
+      commission_pct_notional: 0.001       # 10 bps taker per side
+    data:
+      path: ../fixtures/SYNTHETIC_crypto_5m.csv
+      synthetic: true
+      description: "Synthetic 5-minute bars from jaxon.data.fixtures (seed 23)"
+
+risk:
+  max_leverage: 1.0
+
+evaluation:
+  development_end: "2025-03-01"
+  validation_end: "2025-04-01"
+  sensitivity:
+    displacement_atr_mult: [1.25, 1.5, 2.0]
+    zone_expiry_bars: [10, 20, 30]
+    min_reward_risk: [1.25, 1.5, 2.0]

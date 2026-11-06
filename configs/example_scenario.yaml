@@ -1,0 +1,55 @@
+# ======================================================================
+# EXAMPLE CONFIGURATION for the SCRIPTED SYNTHETIC SCENARIO.
+# A hand-built price path designed to pass through every rule. It demonstrates
+# mechanics only; it is not evidence that the setup works on real markets.
+# 24/7 UTC calendar, share-like instrument metadata.
+# ======================================================================
+config_version: "example-scenario-1"
+example: true
+
+portfolio:
+  starting_equity: 100000
+  currency: USD
+  risk_day_timezone: UTC
+  risk_day_reset: "00:00"
+
+instruments:
+  - symbol: SCENARIO
+    asset_class: crypto
+    currency: USD
+    tick_size: 0.01
+    lot_size: 1
+    min_quantity: 1
+    value_per_point: 1.0
+    volume_type: exchange
+    session:
+      timezone: UTC
+      open: "00:00"
+      close: "24:00"
+      trading_weekdays: [0, 1, 2, 3, 4, 5, 6]
+      flatten_minutes_before_close: 5
+      last_entry_minutes_before_close: 30
+    bars:
+      base_interval_minutes: 5
+      four_hour_alignment: utc_epoch       # 00,04,08,12,16,20 UTC
+      stale_gap_bars: 1
+      stale_recovery_bars: 6
+    costs:
+      spread_ticks: 1
+      slippage_ticks: 1
+      commission_per_unit: 0.005
+    data:
+      path: ../fixtures/SYNTHETIC_scenario_5m.csv
+      synthetic: true
+      description: "Scripted scenario that exercises every stage (jaxon.data.fixtures.scenario)"
+
+risk:
+  max_leverage: 1.0
+
+evaluation:
+  development_end: "2025-01-10"
+  validation_end: "2025-01-12"
+  sensitivity:
+    displacement_atr_mult: [1.25, 1.5, 2.0]
+    zone_expiry_bars: [10, 20, 30]
+    min_reward_risk: [1.25, 1.5, 2.0]

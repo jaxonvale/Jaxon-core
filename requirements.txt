@@ -1,4 +1,9 @@
-# Python dependencies
+# Python dependencies (Python 3.11+)
 flask
 requests
-# add more later as Jaxon grows
+# JAXON trading research agent
+pandas>=2.2
+numpy>=1.26
+PyYAML>=6.0
+pytest>=8          # tests
+# optional: anthropic>=0.40   (only for `jaxon explain --llm`)

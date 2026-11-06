@@ -1,0 +1,92 @@
+# ======================================================================
+# LUCID TRADING 50K STUDY CONFIG — EXAMPLE, ASSUMPTIONS LABELED.
+# Price data: REAL Binance spot BTCUSDT/ETHUSDT 1-minute bars (2025), used as a
+# PROXY for CME Micro Bitcoin (MBT) and Micro Ether (MET) futures, which prop
+# firms such as Topstep allow. Not CME data: basis, CME volume and CME
+# holidays are not modeled. VWAP uses Binance volume.
+# Contract specs: MBT = 0.1 BTC, tick 5 index points ($0.50);
+#                 MET = 0.1 ETH, tick 0.50 points ($0.05).
+# Commissions are ASSUMED all-in per side.
+# ======================================================================
+config_version: "lucid-50k-1"
+example: true
+
+portfolio:
+  starting_equity: 50000
+  currency: USD
+  risk_day_timezone: America/New_York    # Lucid trading day: 6:00 PM ET reset
+  risk_day_reset: "18:00"
+
+instruments:
+  - symbol: BTCUSDT          # stands in for MBT
+    asset_class: future
+    currency: USD
+    tick_size: 5.0
+    lot_size: 1
+    min_quantity: 1
+    max_quantity: 40          # Lucid 50K cap: 40 micros
+    value_per_point: 0.1
+    volume_type: exchange
+    session: &cme
+      timezone: America/Chicago
+      open: "17:00"             # Sun-Fri 5:00 PM CT open
+      close: "16:00"
+      trading_weekdays: [0, 1, 2, 3, 4]
+      flatten_minutes_before_close: 20     # flat by 3:40 PM CT = 4:40 PM ET (Lucid: flat by 4:45 PM ET)
+      last_entry_minutes_before_close: 30  # no new entries after 3:30 PM CT
+    bars: &b1
+      base_interval_minutes: 1
+      four_hour_alignment: session_open
+      stale_gap_bars: 1
+      stale_recovery_bars: 10
+    costs:
+      spread_ticks: 1
+      slippage_ticks: 1
+      commission_per_unit: 1.25
+    data:
+      path: ../data/real/BTCUSDT_1m_2025.csv
+      synthetic: false
+
+  - symbol: ETHUSDT          # stands in for MET
+    asset_class: future
+    currency: USD
+    tick_size: 0.5
+    lot_size: 1
+    min_quantity: 1
+    max_quantity: 40
+    value_per_point: 0.1
+    volume_type: exchange
+    session: *cme
+    bars: *b1
+    costs:
+      spread_ticks: 1
+      slippage_ticks: 1
+      commission_per_unit: 0.85
+    data:
+      path: ../data/real/ETHUSDT_1m_2025.csv
+      synthetic: false
+
+risk:                       # the bot's rules from this project
+  risk_per_trade_pct: 0.0025   # $125 per trade on $50K
+  max_daily_drawdown_pct: 0.01 # $500 daily lockout
+  max_entries_per_session: 3
+  max_open_positions: 1
+  max_open_risk_pct: 0.005
+  max_leverage: 50.0           # futures: no cash notional limit; contract cap applies
+  size_from: starting_equity   # fixed-dollar risk so each challenge attempt is comparable
+
+strategy:
+  mode: zone_tap
+  tap_htf_filter: green_candle
+  tap_mtf_trend: ema
+  tap_ema_len: 21
+  zone_expiry_bars: 48
+  target_mode: pro_atr
+  pro_trend_adj: 10
+  pro_target_adj: 1.0
+  pro_stop_adj: 1.0
+  pro_target_n: 2
+
+evaluation:
+  development_end: "2025-07-01"
+  validation_end: "2025-10-01"

@@ -1,0 +1,570 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Portions (PRO Breakout trend, cloud, confirmations, target ladder) are adapted from the MPL-2.0 "PRO Breakout Signals" indicator.
+//
+// JAXON Signals — BUY/SELL indicator with a mode switch:
+//   PRO Breakout            : the original breakout BUY/SELL signals
+//   PRO Breakout + 4H filter: breakout signals only in the direction of the 4H swing trend
+//   Zone Tap -> VWAP        : 4H candle green + 30m downtrend -> BUY when price taps 30m demand, target VWAP
+//                             4H candle red + 30m uptrend   -> SELL when price taps 30m supply, target VWAP
+//   Zone Tap + PRO filter   : Zone Tap signals only when the PRO cloud agrees
+//
+// Signals print on CLOSED bars only. Higher-timeframe values come from closed 4H/30m bars, and swing
+// points are used only after their right-hand bars close, so past signals do not repaint.
+// Zone Tap works on any chart timeframe below 30m (5m recommended). PRO modes work on any timeframe.
+
+//@version=5
+indicator("JAXON Signals [PRO Breakout + 4H]", shorttitle="JAXON Signals", overlay=true,
+     max_labels_count=500, max_lines_count=500, max_boxes_count=200, max_bars_back=500)
+
+// ============================================================ INPUTS
+G_MODE = "1. Signal mode"
+mode       = input.string("Zone Tap -> VWAP", "Signal mode", group=G_MODE,
+     options=["Zone Tap -> VWAP", "Zone Tap + PRO filter", "PRO Breakout", "PRO Breakout + 4H filter"])
+show_buys  = input.bool(true, "Show BUY signals", group=G_MODE, inline="bs")
+show_sells = input.bool(true, "Show SELL signals", group=G_MODE, inline="bs")
+min_conf   = input.int(0, "Min confirmations to show a signal (0-8)", minval=0, maxval=8, group=G_MODE)
+
+G_PRO = "2. PRO Breakout settings"
+trend_adj  = input.int(10, "Signal Adjuster", minval=1, maxval=25, group=G_PRO, tooltip="Extreme scalping 1-5, scalping 5-10, intraday 10-15, swing 15+")
+target_adj = input.float(1.0, "Target Adjuster", minval=1, maxval=10, step=0.25, group=G_PRO)
+stop_adj   = input.float(1.0, "Stop Adjuster", minval=1, maxval=10, step=0.25, group=G_PRO)
+use_reentry = input.bool(false, "Re-entry signals", group=G_PRO)
+
+G_4H = "3. Zone Tap settings (4H + 30m)"
+htf_tf      = input.timeframe("240", "Trend timeframe (4H)", group=G_4H)
+htf_rule    = input.string("Green/red 4H candle", "4H rule", options=["Green/red 4H candle", "4H swing trend", "Both"], group=G_4H,
+     tooltip="Green/red candle: last CLOSED 4H candle green = buys only, red = sells only.\nSwing trend: higher highs + higher lows (buys) / lower highs + lower lows (sells).")
+mtf_tf      = input.timeframe("30", "Pullback + zone timeframe (30m)", group=G_4H)
+mtf_rule    = input.string("EMA trend", "30m downtrend/uptrend rule", options=["EMA trend", "Lower highs & lows", "Either"], group=G_4H,
+     tooltip="EMA trend: 30m close below a falling EMA = downtrend (above a rising EMA = uptrend).\nLower highs & lows: last two 30m swing highs AND lows falling (rising for uptrend).")
+mtf_ema     = input.int(21, "30m EMA length", minval=2, group=G_4H)
+piv_l       = input.int(2, "Swing bars left", minval=1, maxval=10, group=G_4H)
+piv_r       = input.int(2, "Swing bars right", minval=1, maxval=10, group=G_4H)
+atr_len     = input.int(14, "Zone ATR length", minval=2, group=G_4H)
+disp_mult   = input.float(1.5, "Zone: impulse candle body >= x ATR", minval=0.25, step=0.25, group=G_4H)
+base_lb     = input.int(5, "Zone: base candle lookback", minval=1, maxval=10, group=G_4H)
+zone_exp    = input.int(48, "Zone expiry (30m bars)", minval=1, group=G_4H)
+entry_at    = input.string("Zone edge (limit order)", "Entry price", options=["Zone edge (limit order)", "Close of tap candle"], group=G_4H)
+stop_ticks  = input.int(1, "Stop: ticks beyond the zone", minval=0, group=G_4H)
+min_rr      = input.float(1.5, "Min reward/risk to VWAP", minval=0.25, step=0.25, group=G_4H)
+one_at_time = input.bool(true, "One open signal at a time", group=G_4H)
+
+G_CONF = "4. Confirmations"
+c1_len1  = input.int(8, "MA cross: short", group=G_CONF, inline="c1")
+c1_type1 = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c1")
+c1_len2  = input.int(20, "MA cross: long", group=G_CONF, inline="c2")
+c1_type2 = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c2")
+mom_len  = input.int(20, "Momentum length", group=G_CONF)
+rvol_len = input.int(100, "RVOL length", minval=20, maxval=200, group=G_CONF)
+input_or = input.session("0930-1000", "Opening range (New York time)", group=G_CONF)
+vw_type  = input.string("Daily", "Confirmation VWAP", options=["Daily", "Weekly"], group=G_CONF)
+c6_len   = input.int(50, "MTF MA 1", group=G_CONF, inline="c6")
+c6_type  = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c6")
+c6_tf    = input.timeframe("", "", group=G_CONF, inline="c6")
+c7_len   = input.int(200, "MTF MA 2", group=G_CONF, inline="c7")
+c7_type  = input.string("EMA", "", options=["MA", "WMA", "VWMA", "EMA", "HMA"], group=G_CONF, inline="c7")
+c7_tf    = input.timeframe("", "", group=G_CONF, inline="c7")
+sec_sym  = input.symbol("AMEX:SPY", "Secondary symbol", group=G_CONF)
+
+G_VIS = "5. Visuals"
+show_cloud = input.bool(true, "PRO Cloud", group=G_VIS)
+show_zones = input.bool(true, "Supply/demand zones", group=G_VIS)
+show_vwap  = input.bool(true, "Session VWAP", group=G_VIS)
+show_conf  = input.bool(true, "Confirmation score labels", group=G_VIS)
+show_hits  = input.bool(true, "Target / stop hit labels", group=G_VIS)
+showing_lines = input.string("Current Signal Only", "Trade lines", options=["Current Signal Only", "All Signals (Backtesting)", "No Lines"], group=G_VIS)
+show_table = input.bool(true, "Status table", group=G_VIS)
+buy_color  = input.color(#27a69b, "Buy", group=G_VIS, inline="c")
+sell_color = input.color(#b63632, "Sell", group=G_VIS, inline="c")
+entry_color = input.color(#27a69b, "Entry", group=G_VIS, inline="l")
+tgts_color = input.color(#1c7ed6, "Targets", group=G_VIS, inline="l")
+stop_color = input.color(#E040FB, "Stop", group=G_VIS, inline="l")
+
+bool is_pro = mode == "PRO Breakout" or mode == "PRO Breakout + 4H filter"
+bool is_tap_pro = mode == "Zone Tap + PRO filter"
+bool is_sys = not is_pro
+
+// ============================================================ HELPERS
+f_piv_hi(l, r) =>
+    float c = high[r]
+    bool ok = not na(c)
+    for i = 0 to l + r
+        if i != r and (na(high[i]) or high[i] >= c)
+            ok := false
+    ok ? c : float(na)
+
+f_piv_lo(l, r) =>
+    float c = low[r]
+    bool ok = not na(c)
+    for i = 0 to l + r
+        if i != r and (na(low[i]) or low[i] <= c)
+            ok := false
+    ok ? c : float(na)
+
+f_ma(src, len, type) =>
+    type == "MA" ? ta.sma(src, len) : type == "WMA" ? ta.wma(src, len) : type == "VWMA" ? ta.vwma(src, len) : type == "EMA" ? ta.ema(src, len) : ta.hma(src, len)
+
+f_tick(x) =>
+    math.round_to_mintick(x)
+
+// 4H swing trend: +1 rising highs AND rising lows, -1 falling highs AND falling lows, 0 otherwise
+f_bias(l, r) =>
+    ph = f_piv_hi(l, r)
+    pl = f_piv_lo(l, r)
+    h0 = ta.valuewhen(not na(ph), ph, 0)
+    h1 = ta.valuewhen(not na(ph), ph, 1)
+    l0 = ta.valuewhen(not na(pl), pl, 0)
+    l1 = ta.valuewhen(not na(pl), pl, 1)
+    int b = na(h1) or na(l1) ? 0 : (h0 > h1 and l0 > l1 ? 1 : (h0 < h1 and l0 < l1 ? -1 : 0))
+    [b[1], h0[1], h1[1], l0[1], l1[1]]
+
+// 30m zones: demand = last bearish candle before a bullish displacement that closes above the prior swing high;
+//            supply = last bullish candle before a bearish displacement that closes below the prior swing low
+f_zones(mult, alen, lb, l, r) =>
+    a = ta.atr(alen)
+    ph = f_piv_hi(l, r)
+    pl = f_piv_lo(l, r)
+    sh = ta.valuewhen(not na(ph), ph, 0)
+    sl = ta.valuewhen(not na(pl), pl, 0)
+    float shb = sh[1]
+    float slb = sl[1]
+    float body = math.abs(close - open)
+    bool big = not na(a[1]) and body >= mult * a[1]
+    bool bull = big and close > open and not na(shb) and close > shb
+    bool bear = big and close < open and not na(slb) and close < slb
+    float d_lo = na
+    float d_hi = na
+    float s_lo = na
+    float s_hi = na
+    if bull
+        for i = 1 to lb
+            if close[i] < open[i]
+                d_lo := low[i]
+                d_hi := high[i]
+                break
+    if bear
+        for i = 1 to lb
+            if close[i] > open[i]
+                s_lo := low[i]
+                s_hi := high[i]
+                break
+    bool dnew = bull and not na(d_lo)
+    bool snew = bear and not na(s_lo)
+    [dnew[1], d_lo[1], d_hi[1], snew[1], s_lo[1], s_hi[1], time_close[1], close[1], close[2]]
+
+// ============================================================ HIGHER TIMEFRAMES (closed bars only)
+[bias_raw, h0, h1, l0, l1] = request.security(syminfo.tickerid, htf_tf, f_bias(piv_l, piv_r), lookahead=barmerge.lookahead_on)
+int bias = nz(bias_raw)
+[d_new, d_lo_in, d_hi_in, s_new, s_lo_in, s_hi_in, z_t, c30_1, c30_2] = request.security(syminfo.tickerid, mtf_tf,
+     f_zones(disp_mult, atr_len, base_lb, piv_l, piv_r), lookahead=barmerge.lookahead_on)
+bool new30 = not na(z_t) and z_t != nz(z_t[1])
+
+// last CLOSED 4H candle colour
+[g4_raw, r4_raw] = request.security(syminfo.tickerid, htf_tf, [close[1] > open[1], close[1] < open[1]], lookahead=barmerge.lookahead_on)
+bool g4 = g4_raw
+bool r4 = r4_raw
+bool htf_long_ok  = htf_rule == "Green/red 4H candle" ? g4 : htf_rule == "4H swing trend" ? bias == 1 : (g4 and bias == 1)
+bool htf_short_ok = htf_rule == "Green/red 4H candle" ? r4 : htf_rule == "4H swing trend" ? bias == -1 : (r4 and bias == -1)
+
+// 30m trend from CLOSED 30m bars
+f_t30(len, l, r) =>
+    e = ta.ema(close, len)
+    ph = f_piv_hi(l, r)
+    pl = f_piv_lo(l, r)
+    a0 = ta.valuewhen(not na(ph), ph, 0)
+    a1 = ta.valuewhen(not na(ph), ph, 1)
+    b0 = ta.valuewhen(not na(pl), pl, 0)
+    b1 = ta.valuewhen(not na(pl), pl, 1)
+    bool dn_e = close < e and e < e[1]
+    bool up_e = close > e and e > e[1]
+    bool dn_s = not na(a1) and not na(b1) and a0 < a1 and b0 < b1
+    bool up_s = not na(a1) and not na(b1) and a0 > a1 and b0 > b1
+    [dn_e[1], up_e[1], dn_s[1], up_s[1], e[1]]
+[t_dn_e, t_up_e, t_dn_s, t_up_s, ema30] = request.security(syminfo.tickerid, mtf_tf, f_t30(mtf_ema, piv_l, piv_r), lookahead=barmerge.lookahead_on)
+bool mtf_down = mtf_rule == "EMA trend" ? t_dn_e : mtf_rule == "Lower highs & lows" ? t_dn_s : (t_dn_e or t_dn_s)
+bool mtf_up   = mtf_rule == "EMA trend" ? t_up_e : mtf_rule == "Lower highs & lows" ? t_up_s : (t_up_e or t_up_s)
+
+// ============================================================ PRO BREAKOUT (ported)
+get_trend(symbol, trend_adj, use_reentry) =>
+    trend_length = 4 * trend_adj
+    trend_breakout = request.security(symbol, "", barstate.isconfirmed and (ta.rsi(close, 14) > 60 or ta.rsi(close, 14) < 40) and close > (ta.ema(hlc3, trend_length) + (ta.stdev(ta.ema(hlc3, trend_length), trend_length) * (0.25 * trend_adj))) and low > ta.ema(hlc3, trend_length) and high >= ta.highest(high, trend_length))
+    trend_breakdown = request.security(symbol, "", barstate.isconfirmed and (ta.rsi(close, 14) > 60 or ta.rsi(close, 14) < 40) and close < (ta.ema(hlc3, trend_length) - (ta.stdev(ta.ema(hlc3, trend_length), trend_length) * (0.25 * trend_adj))) and high < ta.ema(hlc3, trend_length) and low <= ta.lowest(low, trend_length))
+    trend_avg = ta.ema(hlc3, trend_length)
+    trend_stddev = ta.stdev(ta.ema(hlc3, trend_length), trend_length)
+    var trend_direction = 0
+    trend_direction := trend_breakout ? 1 : trend_breakdown ? -1 : trend_direction[1]
+    long_entry = trend_direction == 1 and trend_direction[1] == -1
+    short_entry = trend_direction == -1 and trend_direction[1] == 1
+    var last_entry_bn = 0
+    var re_entry_count = 0
+    var long_reentry = false
+    var short_reentry = false
+    last_entry_bn := (long_entry or short_entry) ? 1 : last_entry_bn[1] + 1
+    re_entry_count := (long_entry or short_entry) ? 1 : re_entry_count[1]
+    xo = ta.crossover(close, trend_avg)
+    xu = ta.crossunder(close, trend_avg)
+    long_reentry := false
+    short_reentry := false
+    if use_reentry and barstate.isconfirmed
+        if trend_direction == 1 and last_entry_bn >= 20 and re_entry_count == 1 and xo
+            long_reentry := true
+            re_entry_count := re_entry_count[1] + 1
+        else if trend_direction == -1 and last_entry_bn >= 20 and re_entry_count == 1 and xu
+            short_reentry := true
+            re_entry_count := re_entry_count[1] + 1
+    [trend_avg, trend_stddev, trend_direction, long_entry, short_entry, long_reentry, short_reentry]
+
+[trend_avg, trend_stddev, trend_direction, long_entry, short_entry, long_reentry, short_reentry] = get_trend(syminfo.tickerid, trend_adj, use_reentry)
+pro_atr = ta.atr(4 * trend_adj)
+cloud_lo = trend_avg - trend_stddev * 0.25
+cloud_hi = trend_avg + trend_stddev * 0.25
+
+// ============================================================ CONFIRMATIONS (score out of 8 + checklist)
+ma1 = f_ma(close, c1_len1, c1_type1)
+ma2 = f_ma(close, c1_len2, c1_type2)
+last_xo = ta.valuewhen(ta.crossover(ma1, ma2), bar_index, 0)
+last_xu = ta.valuewhen(ta.crossunder(ma1, ma2), bar_index, 0)
+int bars_since_cross = bar_index - math.max(nz(last_xo), nz(last_xu))
+int c1 = bars_since_cross <= 5 ? 1 : 0
+
+[ha_o, ha_c, ha_h, ha_l] = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, [ta.ema(open, mom_len), ta.ema(close, mom_len), ta.ema(high, mom_len), ta.ema(low, mom_len)])
+dif_oc = ta.ema(ha_c, mom_len) - ta.ema(ha_o, mom_len)
+dif_hl = ta.ema(ha_h, mom_len) - ta.ema(ha_l, mom_len)
+mom_pct = dif_hl != 0 ? dif_oc * 100 / dif_hl : 0.0
+
+svol = ta.ema(volume, rvol_len)
+rvol_value = math.round(ta.ema(volume / svol[1], 20), 2)
+int c3 = rvol_value >= 0.9 ? 1 : 0
+
+or_session = time(timeframe.period, str.format("{0}:1234567", input_or), "America/New_York")
+bool in_or = not na(or_session)
+var float or_high = na
+var float or_low = na
+if in_or
+    if not in_or[1]
+        or_low := low
+        or_high := high
+    else
+        or_low := math.min(low, or_low)
+        or_high := math.max(high, or_high)
+
+conf_anchor = timeframe.change(vw_type == "Daily" ? "1D" : "1W")
+[conf_vwap, conf_vw_up, conf_vw_lo] = ta.vwap(hlc3, conf_anchor, 1.0)
+ma6 = request.security(syminfo.tickerid, c6_tf, f_ma(close[1], c6_len, c6_type), lookahead=barmerge.lookahead_on)
+ma7 = request.security(syminfo.tickerid, c7_tf, f_ma(close[1], c7_len, c7_type), lookahead=barmerge.lookahead_on)
+[t_avg8, t_sd8, td8, le8, se8, lr8, sr8] = get_trend(sec_sym, trend_adj, false)
+sec_name = str.substring(sec_sym, str.pos(sec_sym, ":") + 1)
+
+f_mark(ok) =>
+    ok ? "✅ " : "❌ "
+
+int k2l = mom_pct > 0 ? 1 : 0
+int k4l = in_or ? 1 : (high >= nz(or_high, high + 1) ? 1 : 0)
+int k5l = close >= conf_vwap ? 1 : 0
+int k6l = close >= ma6 ? 1 : 0
+int k7l = close >= ma7 ? 1 : 0
+int k8l = td8 == 1 ? 1 : 0
+int k2s = mom_pct <= 0 ? 1 : 0
+int k4s = in_or ? 1 : (low <= nz(or_low, low - 1) ? 1 : 0)
+int k5s = close <= conf_vwap ? 1 : 0
+int k6s = close <= ma6 ? 1 : 0
+int k7s = close <= ma7 ? 1 : 0
+int k8s = td8 == -1 ? 1 : 0
+int score_long = c1 + k2l + c3 + k4l + k5l + k6l + k7l + k8l
+int score_short = c1 + k2s + c3 + k4s + k5s + k6s + k7s + k8s
+
+f_conf_text(dir) =>
+    bool L = dir == 1
+    f_mark(c1 == 1) + "MA CROSS " + str.tostring(c1_len1) + "/" + str.tostring(c1_len2) + ": " + str.tostring(bars_since_cross) + " bars ago\n" +
+     f_mark((L ? k2l : k2s) == 1) + "MOMENTUM: " + (mom_pct > 0 ? "UP" : "DOWN") + "\n" +
+     f_mark((L ? k4l : k4s) == 1) + (in_or ? "STILL IN OPENING RANGE" : (L ? "OPENING RANGE BREAKOUT: " + str.tostring(or_high, format.mintick) : "OPENING RANGE BREAKDOWN: " + str.tostring(or_low, format.mintick))) + "\n" +
+     f_mark(c3 == 1) + "RVOL: " + str.tostring(rvol_value) + "\n" +
+     f_mark((L ? k5l : k5s) == 1) + "VWAP: " + str.tostring(conf_vwap, format.mintick) + "\n" +
+     f_mark((L ? k6l : k6s) == 1) + str.tostring(c6_len) + " " + c6_type + ": " + str.tostring(ma6, format.mintick) + "\n" +
+     f_mark((L ? k7l : k7s) == 1) + str.tostring(c7_len) + " " + c7_type + ": " + str.tostring(ma7, format.mintick) + "\n" +
+     f_mark((L ? k8l : k8s) == 1) + sec_name + ((L ? k8l : k8s) == 1 ? " last signal matches" : " last signal does not match") + "\n" +
+     "4H: " + (g4 ? "GREEN candle" : r4 ? "RED candle" : "doji") + ", swings " + (bias == 1 ? "UP" : bias == -1 ? "DOWN" : "NEUTRAL") + "\n30m: " + (mtf_down ? "DOWNTREND" : mtf_up ? "UPTREND" : "no trend") + "\n\nCONFIRMED: " + str.tostring(L ? score_long : score_short) + " / 8"
+
+// ============================================================ SESSION VWAP (Zone Tap target)
+sys_vwap = ta.vwap(hlc3, timeframe.change("1D"))
+
+// ============================================================ ZONES (arrays)
+var float[] zl_a = array.new_float()
+var float[] zh_a = array.new_float()
+var int[]   zt_a = array.new_int()
+var int[]   zd_a = array.new_int()     // +1 demand, -1 supply
+var int[]   zb_a = array.new_int()
+var int[]   zs_a = array.new_int()     // 0 active, 1 invalidated, 2 expired
+var bool[]  zu_a = array.new_bool()
+var box[]   zx_a = array.new_box()
+
+f_end_box(b) =>
+    if not na(b)
+        box.set_right(b, bar_index)
+        box.set_extend(b, extend.none)
+
+f_add_zone(dir, lo, hi) =>
+    array.push(zl_a, lo)
+    array.push(zh_a, hi)
+    array.push(zt_a, z_t)
+    array.push(zd_a, dir)
+    array.push(zb_a, 0)
+    array.push(zs_a, 0)
+    array.push(zu_a, false)
+    box bx = na
+    if show_zones and is_sys
+        col = dir == 1 ? buy_color : sell_color
+        bx := box.new(bar_index, hi, bar_index + 1, lo, border_color=color.new(col, 30), bgcolor=color.new(col, 85), extend=extend.right)
+    array.push(zx_a, bx)
+
+if new30 and not na(c30_1)
+    n = array.size(zl_a)
+    if n > 0
+        for k = 0 to n - 1
+            if array.get(zs_a, k) == 0
+                array.set(zb_a, k, array.get(zb_a, k) + 1)
+                int dir = array.get(zd_a, k)
+                bool broken = dir == 1 ? c30_1 < array.get(zl_a, k) : c30_1 > array.get(zh_a, k)
+                if broken
+                    array.set(zs_a, k, 1)
+                    f_end_box(array.get(zx_a, k))
+                else if array.get(zb_a, k) >= zone_exp
+                    array.set(zs_a, k, 2)
+                    f_end_box(array.get(zx_a, k))
+    if d_new
+        f_add_zone(1, d_lo_in, d_hi_in)
+    if s_new
+        f_add_zone(-1, s_lo_in, s_hi_in)
+    if array.size(zl_a) > 60 and array.get(zs_a, 0) != 0
+        array.shift(zl_a)
+        array.shift(zh_a)
+        array.shift(zt_a)
+        array.shift(zd_a)
+        array.shift(zb_a)
+        array.shift(zs_a)
+        array.shift(zu_a)
+        array.shift(zx_a)
+
+// ============================================================ ZONE TAP LOGIC
+var int tr_dir_prev = 0
+// BUY : 4H rule says up, 30m in a downtrend, price taps an unused demand zone -> buy at the zone top
+//       (or tap-candle close), stop below the zone, target = session VWAP known before the tap.
+// SELL: mirror image with supply zones.
+f_pick_tap(dir) =>
+    int pick = -1
+    n = array.size(zl_a)
+    if n > 0
+        for k = n - 1 to 0
+            if array.get(zd_a, k) == dir and array.get(zs_a, k) == 0 and not array.get(zu_a, k) and time >= array.get(zt_a, k)
+                bool touched = dir == 1 ? low <= array.get(zh_a, k) : high >= array.get(zl_a, k)
+                if touched
+                    pick := k
+                    break
+    pick
+
+f_armed(dir) =>
+    // nearest unused zone waiting for a tap (for the status table)
+    int pick = -1
+    n = array.size(zl_a)
+    if n > 0
+        for k = n - 1 to 0
+            if array.get(zd_a, k) == dir and array.get(zs_a, k) == 0 and not array.get(zu_a, k)
+                pick := k
+                break
+    pick
+
+bool sys_buy = false
+bool sys_sell = false
+float sys_entry = na
+float sys_stop = na
+float sys_tgt = na
+float vw_known = sys_vwap[1]            // VWAP as of the previous close: known before the tap happens
+bool can_new = not one_at_time or tr_dir_prev == 0
+
+if is_sys and barstate.isconfirmed and can_new
+    if show_buys and htf_long_ok and mtf_down and (not is_tap_pro or trend_direction == 1)
+        k = f_pick_tap(1)
+        if k >= 0
+            float zt_ = array.get(zh_a, k)
+            float zb_ = array.get(zl_a, k)
+            float e_ = entry_at == "Zone edge (limit order)" ? math.min(open, zt_) : close
+            float st_ = zb_ - stop_ticks * syminfo.mintick
+            float rr_ = (e_ > st_ and vw_known > e_) ? (vw_known - e_) / (e_ - st_) : 0.0
+            if rr_ >= min_rr
+                array.set(zu_a, k, true)
+                sys_buy := true
+                sys_entry := e_
+                sys_stop := st_
+                sys_tgt := vw_known
+    if show_sells and not sys_buy and htf_short_ok and mtf_up and (not is_tap_pro or trend_direction == -1)
+        k = f_pick_tap(-1)
+        if k >= 0
+            float zt_ = array.get(zh_a, k)
+            float zb_ = array.get(zl_a, k)
+            float e_ = entry_at == "Zone edge (limit order)" ? math.max(open, zb_) : close
+            float st_ = zt_ + stop_ticks * syminfo.mintick
+            float rr_ = (e_ < st_ and vw_known < e_) ? (e_ - vw_known) / (st_ - e_) : 0.0
+            if rr_ >= min_rr
+                array.set(zu_a, k, true)
+                sys_sell := true
+                sys_entry := e_
+                sys_stop := st_
+                sys_tgt := vw_known
+
+// ============================================================ FINAL SIGNALS
+bool pro_buy  = is_pro and long_entry and (mode == "PRO Breakout" or htf_long_ok)
+bool pro_sell = is_pro and short_entry and (mode == "PRO Breakout" or htf_short_ok)
+bool buy_sig  = show_buys and score_long >= min_conf and (pro_buy or sys_buy)
+bool sell_sig = show_sells and score_short >= min_conf and (pro_sell or sys_sell)
+
+// ============================================================ TRADE TRACKING (entry / stop / targets)
+var int   tr_dir = 0
+var float tr_entry = na
+var float tr_stop = na
+var float tr_t1 = na
+var float tr_t2 = na
+var float tr_t3 = na
+var float tr_t4 = na
+var float tr_t5 = na
+var int   tr_hits = 0
+var int   tr_ntgt = 0
+var int   tr_bn = na
+bool stop_hit = false
+int  tgt_hit = 0
+
+// manage the open signal first (not on the bar it was created)
+if tr_dir != 0 and barstate.isconfirmed
+    bool stopped = tr_dir == 1 ? low <= tr_stop : high >= tr_stop
+    if stopped
+        stop_hit := true
+        tr_dir := 0
+    else
+        for k = 1 to 5
+            float tk = k == 1 ? tr_t1 : k == 2 ? tr_t2 : k == 3 ? tr_t3 : k == 4 ? tr_t4 : tr_t5
+            if not na(tk) and k > tr_hits and (tr_dir == 1 ? high >= tk : low <= tk)
+                tr_hits := k
+                tgt_hit := k
+        if tr_hits >= tr_ntgt and tr_ntgt > 0
+            tr_dir := 0
+
+bool ladder_sys = false     // Zone Tap: single target = VWAP
+if buy_sig or sell_sig
+    int dir = buy_sig ? 1 : -1
+    bool from_pro = buy_sig ? pro_buy : pro_sell
+    bool ladder = from_pro or ladder_sys
+    float step = target_adj * pro_atr
+    tr_dir := dir
+    tr_entry := from_pro ? close : sys_entry
+    tr_stop := from_pro ? close - dir * stop_adj * pro_atr : sys_stop
+    tr_t1 := from_pro ? close + dir * step : sys_tgt
+    tr_t2 := ladder ? close + dir * 2 * step : na
+    tr_t3 := ladder ? close + dir * 3 * step : na
+    tr_t4 := ladder ? close + dir * 4 * step : na
+    tr_t5 := ladder ? close + dir * 5 * step : na
+    tr_ntgt := ladder ? 5 : 1
+    tr_hits := 0
+    tr_bn := bar_index
+
+// ============================================================ PLOTS
+cl_hi = plot(show_cloud ? cloud_hi : na, "Cloud High", color=color.new(color.white, 100), editable=false)
+cl_lo = plot(show_cloud ? cloud_lo : na, "Cloud Low", color=color.new(color.white, 100), editable=false)
+cl_hs = plot(show_cloud ? cloud_hi + pro_atr * 0.1 : na, "Cloud High Shade", color=color.new(#c2c2c2, 90), editable=false)
+cl_ls = plot(show_cloud ? cloud_lo - pro_atr * 0.1 : na, "Cloud Low Shade", color=color.new(#c2c2c2, 90), editable=false)
+base_color = trend_direction == 1 ? buy_color : trend_direction == -1 ? sell_color : color.gray
+fill(cl_hi, cl_lo, color=color.new(base_color, 60), title="Cloud")
+fill(cl_hs, cl_ls, color=color.new(base_color, 85), title="Cloud Shade")
+plot(show_vwap ? sys_vwap : na, "Session VWAP", color=color.new(#f08c00, 0), linewidth=2)
+
+// signal labels (+ confirmation score with checklist tooltip)
+label_y_buy = math.min(low, nz(cloud_lo, low)) - syminfo.mintick * 10
+label_y_sell = math.max(high, nz(cloud_hi, high)) + syminfo.mintick * 10
+if buy_sig
+    label.new(bar_index, label_y_buy, (is_pro ? "BUY" : "BUY\nzone tap") + (show_conf ? "\n" + str.tostring(score_long) + "/8" : ""),
+         style=label.style_label_up, color=color.new(buy_color, 20), textcolor=color.white, size=size.small,
+         tooltip="Entry " + str.tostring(tr_entry, format.mintick) + "\nStop " + str.tostring(tr_stop, format.mintick) + "\nTarget 1 " + str.tostring(tr_t1, format.mintick) + "\n\n" + f_conf_text(1))
+if sell_sig
+    label.new(bar_index, label_y_sell, (is_pro ? "SELL" : "SELL\nzone tap") + (show_conf ? "\n" + str.tostring(score_short) + "/8" : ""),
+         style=label.style_label_down, color=color.new(sell_color, 20), textcolor=color.white, size=size.small,
+         tooltip="Entry " + str.tostring(tr_entry, format.mintick) + "\nStop " + str.tostring(tr_stop, format.mintick) + "\nTarget 1 " + str.tostring(tr_t1, format.mintick) + "\n\n" + f_conf_text(-1))
+
+plotshape(use_reentry and is_pro and long_reentry, "Re-entry long", shape.triangleup, location.belowbar, color.new(buy_color, 50), size=size.tiny)
+plotshape(use_reentry and is_pro and short_reentry, "Re-entry short", shape.triangledown, location.abovebar, color.new(sell_color, 50), size=size.tiny)
+plotshape(show_hits and stop_hit, "Stop hit", shape.xcross, location.abovebar, color.new(stop_color, 0), text="Stop", textcolor=color.new(stop_color, 0), size=size.tiny)
+if show_hits and tgt_hit > 0
+    label.new(bar_index, tr_dir == -1 or (tr_dir == 0 and close < nz(tr_entry)) ? low : high, "T" + str.tostring(tgt_hit),
+         style=label.style_none, textcolor=tgts_color, size=size.small)
+
+// trade lines
+bool lines_all = showing_lines == "All Signals (Backtesting)"
+bool lines_cur = showing_lines == "Current Signal Only"
+bool live = tr_dir != 0
+plot(lines_all and live ? tr_entry : na, "Entry", color=entry_color, style=plot.style_linebr)
+plot(lines_all and live ? tr_stop : na, "Stop", color=stop_color, style=plot.style_linebr)
+plot(lines_all and live ? tr_t1 : na, "Target 1", color=tgts_color, style=plot.style_linebr)
+plot(lines_all and live ? tr_t2 : na, "Target 2", color=tgts_color, style=plot.style_linebr)
+plot(lines_all and live ? tr_t3 : na, "Target 3", color=tgts_color, style=plot.style_linebr)
+plot(lines_all and live ? tr_t4 : na, "Target 4", color=tgts_color, style=plot.style_linebr)
+plot(lines_all and live ? tr_t5 : na, "Target 5", color=tgts_color, style=plot.style_linebr)
+
+var line ln_e = na
+var line ln_s = na
+var line ln_1 = na
+var line ln_2 = na
+var line ln_3 = na
+var line ln_4 = na
+var line ln_5 = na
+f_ln(ln, y, col) =>
+    line.delete(ln)
+    na(y) ? line(na) : line.new(tr_bn, y, bar_index, y, color=col, extend=extend.right)
+if lines_cur and barstate.islast and not na(tr_bn)
+    ln_e := f_ln(ln_e, tr_entry, entry_color)
+    ln_s := f_ln(ln_s, tr_stop, stop_color)
+    ln_1 := f_ln(ln_1, tr_t1, tgts_color)
+    ln_2 := f_ln(ln_2, tr_t2, tgts_color)
+    ln_3 := f_ln(ln_3, tr_t3, tgts_color)
+    ln_4 := f_ln(ln_4, tr_t4, tgts_color)
+    ln_5 := f_ln(ln_5, tr_t5, tgts_color)
+
+// ============================================================ ALERTS
+alertcondition(buy_sig, "BUY signal", "JAXON BUY on {{ticker}} at {{close}}")
+alertcondition(sell_sig, "SELL signal", "JAXON SELL on {{ticker}} at {{close}}")
+alertcondition(stop_hit, "Stop hit", "JAXON stop hit on {{ticker}} at {{close}}")
+alertcondition(tgt_hit > 0, "Target hit", "JAXON target hit on {{ticker}} at {{close}}")
+if buy_sig
+    alert("JAXON BUY " + syminfo.ticker + " | entry " + str.tostring(tr_entry, format.mintick) + " stop " + str.tostring(tr_stop, format.mintick) + " T1 " + str.tostring(tr_t1, format.mintick), alert.freq_once_per_bar_close)
+if sell_sig
+    alert("JAXON SELL " + syminfo.ticker + " | entry " + str.tostring(tr_entry, format.mintick) + " stop " + str.tostring(tr_stop, format.mintick) + " T1 " + str.tostring(tr_t1, format.mintick), alert.freq_once_per_bar_close)
+
+// ============================================================ STATUS TABLE
+var table tb = table.new(position.top_right, 2, 7, bgcolor=color.new(#11141a, 10), border_width=1)
+if show_table and barstate.islast
+    int nd = 0
+    int ns = 0
+    if array.size(zs_a) > 0
+        for k = 0 to array.size(zs_a) - 1
+            if array.get(zs_a, k) == 0 and not array.get(zu_a, k)
+                nd += array.get(zd_a, k) == 1 ? 1 : 0
+                ns += array.get(zd_a, k) == -1 ? 1 : 0
+    tc = color.white
+    table.cell(tb, 0, 0, "Mode", text_color=tc)
+    table.cell(tb, 1, 0, mode, text_color=tc)
+    table.cell(tb, 0, 1, "4H / 30m", text_color=tc)
+    table.cell(tb, 1, 1, (g4 ? "4H GREEN" : r4 ? "4H RED" : "4H doji") + " / " + (mtf_down ? "30m DOWN" : mtf_up ? "30m UP" : "30m flat"),
+         text_color=htf_long_ok and mtf_down ? buy_color : htf_short_ok and mtf_up ? sell_color : color.gray)
+    table.cell(tb, 0, 2, "PRO cloud", text_color=tc)
+    table.cell(tb, 1, 2, trend_direction == 1 ? "UP" : trend_direction == -1 ? "DOWN" : "-", text_color=base_color)
+    table.cell(tb, 0, 3, "Open zones D/S", text_color=tc)
+    table.cell(tb, 1, 3, str.tostring(nd) + " / " + str.tostring(ns), text_color=tc)
+    int ab = f_armed(1)
+    int as_ = f_armed(-1)
+    string armed = (htf_long_ok and mtf_down and ab >= 0) ? "BUY limit at " + str.tostring(array.get(zh_a, ab), format.mintick) + " -> VWAP " + str.tostring(sys_vwap, format.mintick) :
+         (htf_short_ok and mtf_up and as_ >= 0) ? "SELL limit at " + str.tostring(array.get(zl_a, as_), format.mintick) + " -> VWAP " + str.tostring(sys_vwap, format.mintick) : "waiting for 4H + 30m"
+    table.cell(tb, 0, 4, "Zone Tap", text_color=tc)
+    table.cell(tb, 1, 4, armed, text_color=tc)
+    table.cell(tb, 0, 5, "Confirmations L/S", text_color=tc)
+    table.cell(tb, 1, 5, str.tostring(score_long) + "/8  " + str.tostring(score_short) + "/8", text_color=tc)
+    table.cell(tb, 0, 6, "Open signal", text_color=tc)
+    table.cell(tb, 1, 6, tr_dir == 1 ? "LONG from " + str.tostring(tr_entry, format.mintick) : tr_dir == -1 ? "SHORT from " + str.tostring(tr_entry, format.mintick) : "none", text_color=tc)
+
+// remember whether a signal was open at this bar's close (used by 'one open signal at a time')
+tr_dir_prev := tr_dir

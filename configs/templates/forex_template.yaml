@@ -1,0 +1,24 @@
+# TEMPLATE ONLY. Spot FX has no consolidated volume; most feeds carry TICK volume.
+# With volume_type: tick, JAXON refuses VWAP-targeted trades by default
+# (strategy.vwap_allowed_volume_types excludes "tick").
+config_version: "template-forex"
+example: true
+portfolio: {starting_equity: 100000, currency: USD, risk_day_timezone: America/New_York, risk_day_reset: "17:00"}
+instruments:
+  - symbol: EURUSD
+    asset_class: forex
+    currency: USD
+    tick_size: 0.00001
+    lot_size: 1000               # micro lots
+    min_quantity: 1000
+    value_per_point: 1.0         # quantity in EUR units; P&L in USD per 1.0 price move per unit
+    volume_type: tick
+    session:                     # 17:00 NY Sunday -> 17:00 NY Friday, daily roll at 17:00
+      timezone: America/New_York
+      open: "17:00"
+      close: "17:00"
+      trading_weekdays: [0, 1, 2, 3, 4]
+    bars: {base_interval_minutes: 1, four_hour_alignment: session_open}
+    costs: {spread_ticks: 8, slippage_ticks: 2}
+    data: {path: ../../data/EURUSD_1m.csv, synthetic: false}
+risk: {max_leverage: 10.0}

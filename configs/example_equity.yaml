@@ -1,0 +1,94 @@
+# ======================================================================
+# EXAMPLE CONFIGURATION — NOT A RECOMMENDATION.
+# Every number below is a proposed, configurable assumption (docs/assumptions.md).
+# The data file is a SYNTHETIC fixture. Results on it are not evidence of anything.
+# ======================================================================
+config_version: "example-equity-1"
+example: true
+
+portfolio:
+  starting_equity: 100000
+  currency: USD
+  risk_day_timezone: America/New_York
+  risk_day_reset: "00:00"
+
+instruments:
+  - symbol: SYNTH_EQ            # fictional ticker
+    asset_class: equity
+    currency: USD
+    tick_size: 0.01
+    lot_size: 1                 # whole shares
+    min_quantity: 1
+    value_per_point: 1.0        # $1 per $1 move per share
+    volume_type: consolidated   # exchange-reported volume -> VWAP allowed
+    session:
+      timezone: America/New_York
+      open: "09:30"
+      close: "16:00"
+      trading_weekdays: [0, 1, 2, 3, 4]
+      holidays: ["2025-04-18", "2025-05-26"]
+      early_closes: {}
+      flatten_minutes_before_close: 5
+      last_entry_minutes_before_close: 30
+      vwap_reset: session_open
+    bars:
+      base_interval_minutes: 1
+      timestamp_convention: open
+      four_hour_alignment: session_open   # 09:30-13:30, 13:30-16:00 (short last bar)
+      drop_outside_session: true
+      stale_gap_bars: 1
+      stale_recovery_bars: 10
+    costs:
+      spread_ticks: 1
+      slippage_ticks: 1
+      commission_per_unit: 0.005
+      commission_pct_notional: 0.0
+      min_commission_per_order: 1.0
+    data:
+      path: ../fixtures/SYNTHETIC_equity_1m.csv
+      synthetic: true
+      description: "Synthetic 1-minute bars from jaxon.data.fixtures (seed 11)"
+
+risk:
+  risk_per_trade_pct: 0.0025
+  max_daily_drawdown_pct: 0.01
+  max_entries_per_session: 3
+  max_open_positions: 1
+  max_open_risk_pct: 0.005
+  max_leverage: 1.0             # cash account: no margin
+
+strategy:
+  htf_pivot_left: 2
+  htf_pivot_right: 2
+  mtf_pivot_left: 2
+  mtf_pivot_right: 2
+  ltf_pivot_left: 2
+  ltf_pivot_right: 2
+  atr_period: 14
+  displacement_atr_mult: 1.5
+  base_lookback_bars: 5
+  zone_expiry_bars: 20
+  pullback_declining_closes: 2
+  confirm_window_bars: 6
+  min_reward_risk: 1.5
+  stop_offset_ticks: 1
+  vwap_allowed_volume_types: [exchange, consolidated]
+  vwap_require_complete_session: true
+  cancel_setup_at_session_end: true
+
+execution:
+  limit_requires_trade_through: true
+  ambiguous_bar_policy: stop_first
+
+evaluation:
+  development_end: "2025-05-01"
+  validation_end: "2025-06-02"
+  min_trades_for_inference: 100
+  sensitivity:
+    displacement_atr_mult: [1.25, 1.5, 2.0]
+    confirm_window_bars: [4, 6, 8]
+    min_reward_risk: [1.25, 1.5, 2.0]
+
+explain:
+  enabled: false
+  model: claude-opus-5-5
