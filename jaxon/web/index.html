@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jaxon — AI CEO</title>
+<meta name="color-scheme" content="light dark">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --border: #e3e6eb;
+  --text: #15181d; --muted: #5d6673; --faint: #8a929e;
+  --accent: #4f46e5; --accent-2: #eef0ff; --accent-text: #ffffff;
+  --user-bg: #4f46e5; --user-text: #ffffff;
+  --good: #15803d; --warn: #b45309; --bad: #b91c1c;
+  --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --radius: 12px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1014; --panel: #161a20; --panel-2: #1d222a; --border: #2a303a;
+    --text: #e8eaee; --muted: #a0a8b4; --faint: #6f7783;
+    --accent: #8b85ff; --accent-2: #24254a; --accent-text: #0e1014;
+    --user-bg: #3b3a8a; --user-text: #f1f1ff;
+    --good: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+header {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-bottom: 1px solid var(--border); background: var(--panel); flex: none;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; margin-right: auto; }
+.logo {
+  width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: var(--accent-text);
+  display: grid; place-items: center; font-weight: 700; flex: none;
+}
+.brand-text { min-width: 0; }
+.brand-text b { display: block; font-size: 15px; line-height: 1.2; }
+.brand-text span { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.btn {
+  border: 1px solid var(--border); background: var(--panel); border-radius: 9px;
+  padding: 7px 12px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+}
+.btn:hover { background: var(--panel-2); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.icon { padding: 7px; width: 36px; height: 36px; justify-content: center; }
+.btn svg { width: 16px; height: 16px; flex: none; }
+#dashToggle { display: none; }
+
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 400px; }
+
+/* chat */
+.chat { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.messages { flex: 1; overflow-y: auto; padding: 24px 16px 8px; }
+.messages-inner { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+.msg { display: flex; flex-direction: column; max-width: 100%; }
+.msg.user { align-items: flex-end; }
+.bubble { padding: 10px 14px; border-radius: 14px; max-width: min(85%, 640px); overflow-wrap: anywhere; }
+.msg.user .bubble { background: var(--user-bg); color: var(--user-text); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.msg.assistant .bubble { background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow); border-bottom-left-radius: 4px; max-width: 100%; }
+.msg.error .bubble { background: transparent; border: 1px solid var(--bad); color: var(--bad); }
+.who { font-size: 12px; color: var(--faint); margin: 0 4px 4px; }
+.bubble p { margin: 0 0 .6em; }
+.bubble > :last-child { margin-bottom: 0; }
+.bubble ul, .bubble ol { margin: 0 0 .6em; padding-left: 1.3em; }
+.bubble li { margin: .15em 0; }
+.bubble h3, .bubble h4 { margin: .8em 0 .3em; font-size: 15px; }
+.bubble h3:first-child, .bubble h4:first-child { margin-top: 0; }
+.bubble code { font-family: var(--mono); font-size: .88em; background: var(--panel-2); padding: .1em .35em; border-radius: 5px; }
+.bubble pre { background: var(--panel-2); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 0 0 .6em; }
+.bubble pre code { background: none; padding: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 4px 0; }
+.chip {
+  font-size: 11.5px; font-family: var(--mono); padding: 2px 8px; border-radius: 999px;
+  background: var(--accent-2); color: var(--accent); border: 1px solid transparent;
+}
+.chip.err { background: transparent; border-color: var(--bad); color: var(--bad); }
+.thinking { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.dots { display: inline-flex; gap: 4px; }
+.dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: blink 1.2s infinite ease-in-out; }
+.dots i:nth-child(2) { animation-delay: .15s; } .dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: .7; } }
+
+.empty { text-align: center; padding: 40px 8px 16px; color: var(--muted); }
+.empty h2 { color: var(--text); font-size: 22px; margin: 0 0 6px; }
+.empty p { margin: 0 auto 18px; max-width: 460px; }
+.suggestions { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; max-width: 560px; margin: 0 auto; }
+.suggestions button {
+  text-align: left; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font-size: 14px; color: var(--text);
+}
+.suggestions button:hover { border-color: var(--accent); }
+
+.composer { flex: none; padding: 8px 16px 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+.composer-inner { max-width: 760px; margin: 0 auto; }
+.routines { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.routines .btn { font-size: 13px; padding: 5px 10px; border-radius: 999px; }
+.inputbox {
+  display: flex; align-items: flex-end; gap: 8px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 14px; padding: 8px 8px 8px 14px; box-shadow: var(--shadow);
+}
+.inputbox:focus-within { border-color: var(--accent); }
+textarea {
+  flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; resize: none;
+  max-height: 200px; min-height: 24px; padding: 6px 0; line-height: 1.45;
+}
+textarea:focus-visible { outline: none; }
+textarea::placeholder { color: var(--faint); }
+.hint { font-size: 12px; color: var(--faint); margin: 6px 4px 0; }
+
+/* dashboard */
+aside {
+  border-left: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; min-height: 0; min-width: 0;
+}
+.dash-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 0; }
+.dash-head h2 { font-size: 15px; margin: 0; }
+.dash-head .updated { font-size: 12px; color: var(--faint); }
+.dash-close { display: none; }
+.tabs { display: flex; gap: 2px; padding: 10px 12px 0; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.tabs button {
+  border: 0; background: none; padding: 8px 10px; font-size: 13.5px; color: var(--muted);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+}
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .count { font-size: 11px; background: var(--panel-2); border-radius: 999px; padding: 0 6px; margin-left: 4px; color: var(--muted); }
+.panes { flex: 1; overflow-y: auto; padding: 16px; }
+.pane[hidden] { display: none; }
+.section-title { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin: 18px 0 8px; font-weight: 600; }
+.pane > .section-title:first-child { margin-top: 0; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.stat { background: var(--panel-2); border-radius: 10px; padding: 10px; min-width: 0; }
+.stat .label { font-size: 12px; color: var(--muted); }
+.stat .value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat .value.warn { color: var(--warn); } .stat .value.bad { color: var(--bad); } .stat .value.good { color: var(--good); }
+.list { display: flex; flex-direction: column; gap: 8px; }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.item .title { font-weight: 550; overflow-wrap: anywhere; }
+.item .meta { font-size: 12.5px; color: var(--muted); margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.bar { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin-top: 8px; }
+.bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .4s; }
+.goal-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.goal-top .pct { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; flex: none; }
+.task { display: flex; gap: 10px; align-items: flex-start; }
+.task input[type=checkbox] { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); flex: none; cursor: pointer; }
+.task.done .title { text-decoration: line-through; color: var(--faint); }
+.task > div { min-width: 0; flex: 1; }
+.pill { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+.pill.critical, .pill.overdue { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+.pill.high, .pill.blocked { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+.kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.kpi .name { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.kpi .val { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.kpi .on { font-size: 11.5px; color: var(--faint); }
+.none { color: var(--faint); font-size: 13.5px; padding: 6px 0; }
+.addtask { display: flex; gap: 6px; margin-bottom: 12px; }
+.addtask input {
+  flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--panel); border-radius: 9px; padding: 7px 10px; font-size: 14px;
+}
+.profile dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13.5px; }
+.profile dt { color: var(--muted); text-transform: capitalize; }
+.profile dd { margin: 0; overflow-wrap: anywhere; }
+.backdrop { display: none; }
+
+dialog {
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); color: var(--text);
+  padding: 20px; width: min(420px, calc(100vw - 32px)); box-shadow: 0 20px 50px rgba(0,0,0,.25);
+}
+dialog::backdrop { background: rgba(0,0,0,.4); }
+dialog h3 { margin: 0 0 6px; font-size: 16px; }
+dialog p { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+dialog input { width: 100%; border: 1px solid var(--border); background: var(--bg); border-radius: 9px; padding: 8px 10px; font-family: var(--mono); font-size: 13px; }
+dialog .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+  padding: 8px 14px; border-radius: 9px; font-size: 13.5px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50;
+  max-width: calc(100vw - 32px);
+}
+.toast.show { opacity: 1; }
+
+@media (max-width: 980px) {
+  main { grid-template-columns: minmax(0, 1fr); }
+  #dashToggle { display: inline-flex; }
+  aside {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); z-index: 30;
+    transform: translateX(100%); transition: transform .25s ease; border-left: 1px solid var(--border);
+    box-shadow: -10px 0 30px rgba(0,0,0,.15); visibility: hidden;
+  }
+  body.dash-open aside { transform: none; visibility: visible; }
+  body.dash-open .backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 20; }
+  .dash-close { display: inline-flex; }
+}
+@media (max-width: 520px) {
+  header { padding: 8px 12px; gap: 6px; }
+  .btn .lbl { display: none; }
+  .btn.newchat { padding: 7px; width: 36px; height: 36px; justify-content: center; }
+  .messages { padding: 16px 12px 8px; }
+  .composer { padding: 6px 12px 12px; }
+  .hint { display: none; }
+  .bubble { max-width: 92%; }
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .stat { padding: 8px; }
+  .stat .value { font-size: 16px; }
+  .empty { padding-top: 20px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">J</div>
+      <div class="brand-text"><b>Jaxon Vale</b><span id="sessionLabel">AI CEO</span></div>
+    </div>
+    <button class="btn newchat" id="newChat" title="New conversation">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      <span class="lbl">New conversation</span>
+    </button>
+    <button class="btn icon" id="tokenBtn" title="Access token" aria-label="Access token">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3M16 7l3 3M14 9l2 2"/></svg>
+    </button>
+    <button class="btn icon" id="dashToggle" title="Company dashboard" aria-label="Company dashboard" aria-controls="dashboard" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <section class="chat" aria-label="Conversation">
+      <div class="messages" id="messages" aria-live="polite">
+        <div class="messages-inner" id="messagesInner"></div>
+      </div>
+      <div class="composer">
+        <div class="composer-inner">
+          <div class="routines">
+            <button class="btn" id="briefingBtn">☀️ Daily briefing</button>
+            <button class="btn" id="reviewBtn">📊 Weekly review</button>
+          </div>
+          <form class="inputbox" id="form">
+            <textarea id="input" rows="1" placeholder="Message Jaxon…" aria-label="Message"></textarea>
+            <button class="btn primary icon" id="send" type="submit" aria-label="Send" title="Send">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </button>
+          </form>
+          <div class="hint">Enter to send · Shift+Enter for a new line</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="backdrop" id="backdrop"></div>
+    <aside id="dashboard" aria-label="Company dashboard">
+      <div class="dash-head">
+        <div><h2>Company</h2><div class="updated" id="updated">Loading…</div></div>
+        <div style="display:flex;gap:6px">
+          <button class="btn icon" id="refreshBtn" title="Refresh" aria-label="Refresh dashboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+          </button>
+          <button class="btn icon dash-close" id="dashClose" title="Close" aria-label="Close dashboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+        <button role="tab" data-tab="tasks" aria-selected="false">Tasks<span class="count" id="taskCount">0</span></button>
+        <button role="tab" data-tab="kpis" aria-selected="false">KPIs</button>
+        <button role="tab" data-tab="decisions" aria-selected="false">Decisions</button>
+      </div>
+      <div class="panes">
+        <div class="pane" data-pane="overview">
+          <div class="section-title">Finance</div>
+          <div class="stats">
+            <div class="stat"><div class="label">Cash</div><div class="value" id="cash">—</div></div>
+            <div class="stat"><div class="label">Burn / mo</div><div class="value" id="burn">—</div></div>
+            <div class="stat"><div class="label">Runway</div><div class="value" id="runway">—</div></div>
+          </div>
+          <div class="section-title">Goals</div>
+          <div class="list" id="goals"></div>
+          <div class="section-title">Top tasks</div>
+          <div class="list" id="topTasks"></div>
+          <div class="profile" id="profileWrap" hidden>
+            <div class="section-title">Profile</div>
+            <dl id="profile"></dl>
+          </div>
+        </div>
+        <div class="pane" data-pane="tasks" hidden>
+          <form class="addtask" id="addTask">
+            <input id="newTask" placeholder="Add a task…" aria-label="New task title" maxlength="300">
+            <button class="btn" type="submit">Add</button>
+          </form>
+          <div class="list" id="tasks"></div>
+        </div>
+        <div class="pane" data-pane="kpis" hidden>
+          <div class="kpis" id="kpis"></div>
+        </div>
+        <div class="pane" data-pane="decisions" hidden>
+          <div class="list" id="decisions"></div>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<dialog id="tokenDialog">
+  <form method="dialog" id="tokenForm">
+    <h3>Access token</h3>
+    <p>This server requires a token (JAXON_TOKEN). It is stored only in this browser.</p>
+    <input id="tokenInput" type="password" autocomplete="off" placeholder="Paste token">
+    <div class="row">
+      <button class="btn" value="clear" type="submit">Clear</button>
+      <button class="btn primary" value="save" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { if (v == null || v === "") window.localStorage.removeItem(k); else window.localStorage.setItem(k, v); } catch (e) {} },
+  };
+
+  let sessionId = store.get("jaxon.session");
+  let busy = false;
+
+  // ---------- helpers ----------
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 2600); }
+  function money(n) {
+    if (n == null || isNaN(n)) return "—";
+    const a = Math.abs(n), sign = n < 0 ? "-" : "";
+    if (a >= 1e6) return sign + "$" + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + "M";
+    if (a >= 1e4) return sign + "$" + Math.round(a / 1e3) + "k";
+    return sign + "$" + a.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+  function num(v, unit) {
+    const u = (unit || "").trim();
+    if (u === "$" || u.toLowerCase() === "usd") return money(v);
+    const s = Math.abs(v) >= 1000 ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 }) : String(Math.round(v * 100) / 100);
+    if (!u) return s;
+    return u === "%" ? s + "%" : s + " " + u;
+  }
+  function shortDate(s) {
+    if (!s) return "";
+    const d = new Date(s.length <= 10 ? s + "T00:00:00" : s);
+    return isNaN(d) ? s : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  function kpiName(n) {
+    n = String(n).replace(/_/g, " ");
+    return /^[a-z0-9]{2,4}$/i.test(n) ? n.toUpperCase() : n.charAt(0).toUpperCase() + n.slice(1);
+  }
+  function todayISO() { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); }
+
+  // Markdown-lite. Everything is HTML-escaped first; only our own tags are added afterwards.
+  function inline(s) {
+    return s.split(/(`[^`\n]+`)/g).map((part) => {
+      if (/^`[^`\n]+`$/.test(part)) return "<code>" + part.slice(1, -1) + "</code>";
+      return part
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/(^|[^\w*])\*([^*\n]+?)\*(?!\w)/g, "$1<em>$2</em>")
+        .replace(/(^|[\s(])_([^_\n]+?)_(?=[\s.,;:!?)]|$)/g, "$1<em>$2</em>");
+    }).join("");
+  }
+  function renderMarkdown(src) {
+    const lines = esc(src).replace(/\r\n?/g, "\n").split("\n");
+    const out = [];
+    let para = [], list = null;
+    const flushPara = () => { if (para.length) { out.push("<p>" + para.map(inline).join("<br>") + "</p>"); para = []; } };
+    const flushList = () => { if (list) { out.push("<" + list.type + ">" + list.items.map((i) => "<li>" + inline(i) + "</li>").join("") + "</" + list.type + ">"); list = null; } };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^\s*```/.test(line)) {
+        flushPara(); flushList();
+        const buf = [];
+        while (++i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i]);
+        out.push("<pre><code>" + buf.join("\n") + "</code></pre>");
+        continue;
+      }
+      let m;
+      if (!line.trim()) { flushPara(); flushList(); continue; }
+      if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) {
+        flushPara(); flushList();
+        out.push((m[1].length <= 2 ? "<h3>" : "<h4>") + inline(m[2]) + (m[1].length <= 2 ? "</h3>" : "</h4>"));
+        continue;
+      }
+      if ((m = line.match(/^\s*[-*•]\s+(.*)$/)) || (m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+        const type = /^\s*\d/.test(line) ? "ol" : "ul";
+        flushPara();
+        if (list && list.type !== type) flushList();
+        if (!list) list = { type, items: [] };
+        list.items.push(m[1]);
+        continue;
+      }
+      if (/^\s*(---|\*\*\*)\s*$/.test(line)) { flushPara(); flushList(); continue; }
+      if (list && /^\s{2,}\S/.test(line)) { list.items[list.items.length - 1] += " " + line.trim(); continue; }
+      flushList();
+      para.push(line);
+    }
+    flushPara(); flushList();
+    return out.join("");
+  }
+
+  // ---------- API ----------
+  async function api(path, opts = {}) {
+    const headers = Object.assign({}, opts.headers || {});
+    const token = store.get("jaxon.token");
+    if (token) headers["Authorization"] = "Bearer " + token;
+    if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+    let res;
+    try {
+      res = await fetch(path, { method: opts.method || "GET", headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
+    } catch (e) {
+      throw new Error("Network error — is the Jaxon server running?");
+    }
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    if (res.status === 401) { openToken(true); const err = new Error("Unauthorized — set your access token."); err.status = 401; throw err; }
+    if (!res.ok) { const err = new Error((data && data.error) || ("Request failed (" + res.status + ")")); err.status = res.status; throw err; }
+    return data;
+  }
+
+  // ---------- chat ----------
+  const inner = $("messagesInner"), scroller = $("messages");
+  const scrollDown = () => { scroller.scrollTop = scroller.scrollHeight; };
+
+  function showEmpty() {
+    inner.innerHTML = "";
+    const e = el("div", "empty");
+    e.innerHTML = "<h2>What are we working on?</h2><p>I'm Jaxon, your AI CEO. I track tasks, goals, KPIs and cash, and I'll tell you what matters most.</p>";
+    const s = el("div", "suggestions");
+    ["What should I focus on this week?", "Here's what our company does…", "How long is our runway?", "Set our goals for this quarter"].forEach((q) => {
+      const b = el("button"); b.type = "button"; b.textContent = q;
+      b.onclick = () => { if (q.endsWith("…")) { $("input").value = q.replace("…", ": "); $("input").focus(); autosize(); } else send(q); };
+      s.appendChild(b);
+    });
+    e.appendChild(s);
+    inner.appendChild(e);
+  }
+  function clearEmpty() { const e = inner.querySelector(".empty"); if (e) e.remove(); }
+
+  function addMessage(role, text, toolCalls) {
+    clearEmpty();
+    const m = el("div", "msg " + role);
+    if (role !== "user") m.appendChild(el("div", "who", role === "error" ? "Error" : "Jaxon"));
+    const b = el("div", "bubble");
+    if (role === "assistant") b.innerHTML = renderMarkdown(text || "");
+    else b.textContent = text;
+    m.appendChild(b);
+    if (toolCalls && toolCalls.length) {
+      const chips = el("div", "chips");
+      const counts = new Map();
+      toolCalls.forEach((c) => { const k = c.name + (c.error ? "!" : ""); counts.set(k, (counts.get(k) || 0) + 1); });
+      counts.forEach((n, k) => {
+        const err = k.endsWith("!"), name = err ? k.slice(0, -1) : k;
+        const c = el("span", "chip" + (err ? " err" : ""));
+        c.textContent = name + (n > 1 ? " ×" + n : "");
+        if (err) c.title = "Tool returned an error";
+        chips.appendChild(c);
+      });
+      m.appendChild(chips);
+    }
+    inner.appendChild(m);
+    scrollDown();
+    return m;
+  }
+
+  function setBusy(on, label) {
+    busy = on;
+    ["send", "briefingBtn", "reviewBtn", "newChat"].forEach((id) => { $(id).disabled = on; });
+    const existing = $("thinking");
+    if (existing) existing.remove();
+    if (on) {
+      clearEmpty();
+      const m = el("div", "msg assistant"); m.id = "thinking";
+      m.appendChild(el("div", "who", "Jaxon"));
+      const b = el("div", "bubble");
+      b.innerHTML = '<span class="thinking"><span class="dots"><i></i><i></i><i></i></span><span></span></span>';
+      b.querySelector(".thinking > span:last-child").textContent = label || "Thinking…";
+      m.appendChild(b);
+      inner.appendChild(m);
+      scrollDown();
+    }
+  }
+
+  function setSession(id) {
+    sessionId = id || null;
+    store.set("jaxon.session", sessionId);
+    $("sessionLabel").textContent = sessionId ? "AI CEO · session " + sessionId : "AI CEO";
+  }
+
+  async function runTurn(path, body, label, userText) {
+    if (busy) return;
+    if (userText) addMessage("user", userText);
+    setBusy(true, label);
+    try {
+      const data = await api(path, { method: "POST", body: Object.assign({ session_id: sessionId || undefined }, body) });
+      setBusy(false);
+      setSession(data.session_id);
+      addMessage("assistant", data.reply, data.tool_calls);
+    } catch (e) {
+      setBusy(false);
+      addMessage("error", e.message);
+    }
+    refreshDashboard();
+  }
+
+  function send(text) {
+    text = (text ?? $("input").value).trim();
+    if (!text || busy) return;
+    $("input").value = ""; autosize();
+    runTurn("/api/chat", { message: text }, "Thinking…", text);
+  }
+
+  const input = $("input");
+  function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; }
+  input.addEventListener("input", autosize);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  $("form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+  $("briefingBtn").onclick = () => runTurn("/api/briefing", {}, "Preparing your daily briefing…", "Daily briefing");
+  $("reviewBtn").onclick = () => runTurn("/api/review", {}, "Running the weekly review — this can take a minute…", "Weekly review");
+  $("newChat").onclick = () => { if (busy) return; setSession(null); showEmpty(); input.focus(); };
+
+  async function loadHistory() {
+    if (!sessionId) { showEmpty(); return; }
+    try {
+      const data = await api("/api/sessions/" + encodeURIComponent(sessionId));
+      inner.innerHTML = "";
+      if (!data.messages.length) showEmpty();
+      data.messages.forEach((m) => addMessage(m.role === "user" ? "user" : "assistant", m.text));
+    } catch (e) {
+      if (e.status === 404) setSession(null);
+      showEmpty();
+    }
+  }
+
+  // ---------- dashboard ----------
+  function none(msg) { return '<div class="none">' + esc(msg) + "</div>"; }
+
+  function taskItem(t) {
+    const overdue = t.due && t.due < todayISO() && t.status !== "done";
+    const row = el("div", "item task" + (t.status === "done" ? " done" : ""));
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = t.status === "done"; cb.setAttribute("aria-label", "Mark done: " + t.title);
+    cb.onchange = async () => {
+      cb.disabled = true;
+      try {
+        await api("/api/tasks/" + t.id, { method: "PATCH", body: { status: cb.checked ? "done" : "open" } });
+        row.classList.toggle("done", cb.checked);
+        toast(cb.checked ? "Task marked done" : "Task reopened");
+        setTimeout(refreshDashboard, 500);
+      } catch (e) { cb.checked = !cb.checked; toast(e.message); }
+      cb.disabled = false;
+    };
+    const body = el("div");
+    body.appendChild(el("div", "title", esc(t.title)));
+    const meta = el("div", "meta");
+    const pills = [];
+    if (t.priority && t.priority !== "medium") pills.push('<span class="pill ' + esc(t.priority) + '">' + esc(t.priority) + "</span>");
+    if (t.status && !["open", "done"].includes(t.status)) pills.push('<span class="pill ' + esc(t.status) + '">' + esc(t.status.replace("_", " ")) + "</span>");
+    if (overdue) pills.push('<span class="pill overdue">overdue</span>');
+    meta.innerHTML = pills.join("") + (t.owner ? "<span>" + esc(t.owner) + "</span>" : "") + (t.due ? "<span>due " + esc(shortDate(t.due)) + "</span>" : "");
+    body.appendChild(meta);
+    row.append(cb, body);
+    return row;
+  }
+
+  function renderTasks(container, tasks, emptyMsg) {
+    container.innerHTML = "";
+    if (!tasks.length) { container.innerHTML = none(emptyMsg); return; }
+    tasks.forEach((t) => container.appendChild(taskItem(t)));
+  }
+
+  async function refreshDashboard() {
+    try {
+      const [snap, tasks, goals, decisions] = await Promise.all([
+        api("/api/snapshot"), api("/api/tasks?status=active"), api("/api/goals"), api("/api/decisions?limit=15"),
+      ]);
+      const f = snap.finance || {};
+      $("cash").textContent = money(f.cash);
+      $("burn").textContent = f.monthly_burn ? money(f.monthly_burn) : "—";
+      const rw = $("runway");
+      rw.className = "value";
+      if (f.runway_months == null) rw.textContent = f.monthly_burn ? "—" : (f.cash ? "∞" : "—");
+      else { rw.textContent = f.runway_months + " mo"; rw.classList.add(f.runway_months < 6 ? "bad" : f.runway_months < 12 ? "warn" : "good"); }
+
+      const g = $("goals"); g.innerHTML = "";
+      if (!goals.goals.length) g.innerHTML = none("No active goals yet. Ask Jaxon to set OKRs.");
+      goals.goals.forEach((goal) => {
+        const it = el("div", "item");
+        const pct = Math.max(0, Math.min(100, goal.progress || 0));
+        it.innerHTML = '<div class="goal-top"><div class="title">' + esc(goal.objective) + '</div><div class="pct">' + Math.round(pct) + "%</div></div>" +
+          (goal.period ? '<div class="meta"><span>' + esc(goal.period) + "</span><span>" + goal.key_results.length + " key result" + (goal.key_results.length === 1 ? "" : "s") + "</span></div>" : "") +
+          '<div class="bar"><span style="width:' + pct + '%"></span></div>';
+        it.title = goal.key_results.map((k) => "• " + k.description + ": " + k.current + "/" + k.target + (k.unit ? " " + k.unit : "")).join("\n");
+        g.appendChild(it);
+      });
+
+      const active = tasks.tasks;
+      $("taskCount").textContent = active.length;
+      renderTasks($("topTasks"), active.slice(0, 5), "No active tasks.");
+      renderTasks($("tasks"), active, "No active tasks. Add one above or ask Jaxon.");
+
+      const k = $("kpis"); k.innerHTML = "";
+      if (!snap.latest_metrics.length) k.innerHTML = '<div style="grid-column:1/-1">' + none("No KPIs recorded yet. Tell Jaxon your numbers (MRR, users, churn…).") + "</div>";
+      snap.latest_metrics.forEach((m) => {
+        const it = el("div", "item kpi");
+        it.innerHTML = '<div class="name">' + esc(kpiName(m.name)) + '</div><div class="val">' + esc(num(m.value, m.unit)) + '</div><div class="on">' + esc(shortDate(m.on)) + "</div>";
+        k.appendChild(it);
+      });
+
+      const d = $("decisions"); d.innerHTML = "";
+      if (!decisions.decisions.length) d.innerHTML = none("No decisions logged yet.");
+      decisions.decisions.forEach((dec) => {
+        const it = el("div", "item");
+        it.innerHTML = '<div class="title">' + esc(dec.title) + '</div><div class="meta"><span>' + esc(shortDate(dec.created_at)) + "</span></div>" +
+          (dec.decision ? '<div style="margin-top:6px;font-size:13.5px">' + esc(dec.decision) + "</div>" : "") +
+          (dec.rationale ? '<div class="meta" style="margin-top:4px">' + esc(dec.rationale) + "</div>" : "");
+        d.appendChild(it);
+      });
+
+      const prof = snap.profile || {};
+      const keys = Object.keys(prof).filter((x) => x !== "cash_balance");
+      $("profileWrap").hidden = !keys.length;
+      $("profile").innerHTML = keys.slice(0, 12).map((x) => "<dt>" + esc(x.replace(/_/g, " ")) + "</dt><dd>" + esc(prof[x]) + "</dd>").join("");
+
+      $("updated").textContent = "Updated " + new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    } catch (e) {
+      $("updated").textContent = e.status === 401 ? "Token required" : "Couldn't load: " + e.message;
+    }
+  }
+
+  $("addTask").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = $("newTask").value.trim();
+    if (!title) return;
+    try {
+      await api("/api/tasks", { method: "POST", body: { title, owner: "founder" } });
+      $("newTask").value = "";
+      refreshDashboard();
+    } catch (err) { toast(err.message); }
+  });
+  $("refreshBtn").onclick = refreshDashboard;
+
+  document.querySelectorAll(".tabs button").forEach((b) => {
+    b.onclick = () => {
+      document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
+      document.querySelectorAll(".pane").forEach((p) => { p.hidden = p.dataset.pane !== b.dataset.tab; });
+      store.set("jaxon.tab", b.dataset.tab);
+    };
+  });
+  const savedTab = store.get("jaxon.tab");
+  if (savedTab) { const b = document.querySelector('.tabs button[data-tab="' + savedTab + '"]'); if (b) b.click(); }
+
+  function setDash(open) {
+    document.body.classList.toggle("dash-open", open);
+    $("dashToggle").setAttribute("aria-expanded", String(open));
+  }
+  $("dashToggle").onclick = () => setDash(!document.body.classList.contains("dash-open"));
+  $("dashClose").onclick = () => setDash(false);
+  $("backdrop").onclick = () => setDash(false);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setDash(false); });
+
+  // ---------- token ----------
+  const dlg = $("tokenDialog");
+  function openToken(required) {
+    if (dlg.open) return;
+    $("tokenInput").value = store.get("jaxon.token") || "";
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else { const t = window.prompt("Access token (JAXON_TOKEN):", ""); if (t != null) { store.set("jaxon.token", t.trim()); location.reload(); } }
+  }
+  $("tokenBtn").onclick = () => openToken(false);
+  dlg.addEventListener("close", () => {
+    if (dlg.returnValue === "save") { store.set("jaxon.token", $("tokenInput").value.trim()); toast("Token saved"); loadHistory(); refreshDashboard(); }
+    else if (dlg.returnValue === "clear") { store.set("jaxon.token", null); toast("Token cleared"); }
+  });
+
+  // ---------- boot ----------
+  setSession(sessionId);
+  loadHistory();
+  refreshDashboard();
+})();
+</script>
+</body>
+</html>

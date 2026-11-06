@@ -123,20 +123,29 @@ class Jaxon:
              on_event: Callable[[str, dict[str, Any]], None] | None = None) -> tuple[str, TurnResult]:
         session_id = session_id or uuid.uuid4().hex[:12]
         messages = self.memory.load_session(session_id)
+        turn_start = len(messages)
         snapshot = json.dumps(self.memory.snapshot(), default=str)
         messages.append({"role": "user", "content": [
             {"type": "text", "text": f"[Company snapshot]\n{snapshot}"},
             {"type": "text", "text": message},
         ]})
+        result = None
         try:
             result = run_loop(self.llm, system=CEO_SYSTEM, messages=messages, tools=self.tools,
                               extra_tools=self.server_tools, max_rounds=self.config.max_tool_rounds,
                               on_event=on_event)
         finally:
+            if result is not None and result.stop_reason == "refusal":
+                # Don't continue a refused turn (its content is empty or partial): drop it entirely.
+                del messages[turn_start:]
             # Save even if the API call failed mid-turn; history stays append-only.
             if messages and messages[-1]["role"] == "user" and not _is_tool_results(messages[-1]):
                 messages.pop()  # drop the unanswered user turn so the session stays valid
-            self.memory.save_session(session_id, _close_dangling(messages))
+            if result is not None and result.stop_reason == "max_rounds" and _is_tool_results(messages[-1]):
+                # Every tool call was answered, so the turn is valid to resume from; keep its work.
+                self.memory.save_session(session_id, messages)
+            else:
+                self.memory.save_session(session_id, _close_dangling(messages))
         return session_id, result
 
     def history(self, session_id: str) -> list[dict[str, str]]:
@@ -165,7 +174,9 @@ def _close_dangling(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """If a turn ended on unanswered tool_use (e.g. API error), trim back to the last complete exchange."""
     while messages:
         last = messages[-1]
-        if last["role"] == "assistant" and not any(b.get("type") == "tool_use" for b in last["content"]):
+        # An empty assistant message is only valid as the final message of a request, so it can't be kept.
+        if last["role"] == "assistant" and last["content"] and not any(
+                b.get("type") == "tool_use" for b in last["content"]):
             break
         messages.pop()
     return messages

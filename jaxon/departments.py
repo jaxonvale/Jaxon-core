@@ -75,10 +75,14 @@ def build_delegate_tool(jaxon: "Jaxon") -> Tool:
             futures = [(b["department"], pool.submit(consult, b["department"], b["brief"])) for b in briefs]
             memos = {}
             for dept, fut in futures:
+                key, n = dept, 1
+                while key in memos:  # two briefs to the same department must not overwrite each other
+                    n += 1
+                    key = f"{dept} ({n})"
                 try:
-                    memos[dept] = fut.result()
+                    memos[key] = fut.result()
                 except Exception as e:  # one failed department should not sink the others
-                    memos[dept] = f"(the {dept} could not respond: {type(e).__name__}: {e})"
+                    memos[key] = f"(the {dept} could not respond: {type(e).__name__}: {e})"
         return {"memos": memos}
 
     return Tool(
